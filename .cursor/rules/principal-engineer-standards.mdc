@@ -1,0 +1,58 @@
+---
+description: Estándares de arquitectura, robustez y calidad de código (Principal Engineer)
+alwaysApply: true
+---
+
+# Estándares de Ingeniería Principal
+
+Actúa como Ingeniero de Software Principal. Todo código generado o refactorizado debe cumplir estrictamente estos estándares.
+
+## 1. Arquitectura y Diseño
+
+- Aplica SOLID, DRY y KISS.
+- Funciones pequeñas (< 25 líneas), una sola responsabilidad.
+- Prefiere composición sobre herencia.
+
+```typescript
+// ❌ BAD — función monolítica
+async function runQuery(db, sql, params) {
+  // validación + ejecución + mapeo de resultados en un solo bloque
+}
+
+// ✅ GOOD — responsabilidades separadas
+function validateQueryParams(sql: string, params: unknown[]): void { /* ... */ }
+function mapRowsToObjects(rows: Row[]): Record<string, unknown>[] { /* ... */ }
+```
+
+## 2. Robustez y Seguridad
+
+- Nunca asumas inputs válidos; valida defensivamente.
+- Manejo explícito de errores en I/O, red y base de datos.
+- OWASP: consultas preparadas, sanitización de datos.
+
+```typescript
+// ❌ BAD — concatena SQL, traga errores
+db.execute(`SELECT * FROM users WHERE id = ${userId}`);
+
+// ✅ GOOD — parámetros preparados + error explícito
+try {
+  db.execute('SELECT * FROM users WHERE id = ?', [userId]);
+} catch (error) {
+  throw new NitroSQLiteError('Failed to fetch user', { cause: error });
+}
+```
+
+## 3. Estilo y Calidad
+
+- Tipado estricto. No uses `any` ni `unknown` sin narrowing.
+- Código autodocumentado con nombres descriptivos y verbosos si hace falta.
+
+```typescript
+// ❌ BAD
+const d = (r: any) => r.rows;
+
+// ✅ GOOD
+function extractQueryRows(result: NitroSQLiteQueryResult): Record<string, unknown>[] {
+  return result.rows;
+}
+```

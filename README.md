@@ -278,8 +278,9 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.telegram.video-downl
 
 | Archivo | Descripción |
 |---------|-------------|
-| `downloader.py` | Monitor y descargador principal |
-| `dashboard.py` | Panel web local de estado y logs |
+| `downloader.py` | Punto de entrada del monitor y descargador |
+| `dashboard.py` | Punto de entrada del panel web local |
+| `telegram_downloader/` | Paquete con la lógica (config, cola, nombres, panel) |
 | `static/index.html` | Interfaz del panel |
 | `Telegram Downloader.app` | Acceso rápido al panel desde macOS |
 | `list_chats.py` | Lista chats para obtener `CHAT_ID` |
