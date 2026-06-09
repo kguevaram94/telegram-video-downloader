@@ -8,17 +8,17 @@
     <array>
         <string>/usr/bin/python3</string>
         <string>-u</string>
-        <string>/Users/kevin/telegram-video-downloader/dashboard.py</string>
+        <string>/Users/kevin/Projectos/Mio/telegram-video-downloader/dashboard.py</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/kevin/telegram-video-downloader</string>
+    <string>/Users/kevin/Projectos/Mio/telegram-video-downloader</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/kevin/telegram-video-downloader/dashboard.log</string>
+    <string>/Users/kevin/Projectos/Mio/telegram-video-downloader/dashboard.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/kevin/telegram-video-downloader/dashboard.log</string>
+    <string>/Users/kevin/Projectos/Mio/telegram-video-downloader/dashboard.log</string>
 </dict>
 </plist>

@@ -147,14 +147,14 @@ Haz doble clic para abrir el panel en el navegador. Puedes arrastrarla a **Aplic
 ### Arranque automático del panel
 
 ```bash
-cp /Users/kevin/telegram-video-downloader/com.telegram.downloader-dashboard.plist ~/Library/LaunchAgents/
+cp /Users/kevin/Projectos/Mio/telegram-video-downloader/com.telegram.downloader-dashboard.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.telegram.downloader-dashboard.plist
 ```
 
 Log del panel:
 
 ```bash
-tail -f /Users/kevin/telegram-video-downloader/dashboard.log
+tail -f /Users/kevin/Projectos/Mio/telegram-video-downloader/dashboard.log
 ```
 
 ### Qué puedes hacer en el panel
@@ -172,7 +172,7 @@ El proyecto incluye un **LaunchAgent** para macOS. Se inicia al **iniciar sesió
 ### Instalar
 
 ```bash
-cp /Users/kevin/telegram-video-downloader/com.telegram.video-downloader.plist ~/Library/LaunchAgents/
+cp /Users/kevin/Projectos/Mio/telegram-video-downloader/com.telegram.video-downloader.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.telegram.video-downloader.plist
 ```
 
@@ -183,7 +183,7 @@ Ver la sección [Comprobar si está en background](#comprobar-si-está-en-backgr
 ### Ver log en vivo
 
 ```bash
-tail -f /Users/kevin/telegram-video-downloader/downloader.log
+tail -f /Users/kevin/Projectos/Mio/telegram-video-downloader/downloader.log
 ```
 
 ### Parar el servicio
@@ -234,7 +234,7 @@ Si devuelve una línea con `downloader.py`, el script está en ejecución.
 ### 3. Log del servicio
 
 ```bash
-tail -f /Users/kevin/telegram-video-downloader/downloader.log
+tail -f /Users/kevin/Projectos/Mio/telegram-video-downloader/downloader.log
 ```
 
 Si ves algo como:
@@ -254,7 +254,7 @@ Pulsa `Ctrl+C` para salir de `tail -f`.
 Reenvía un video al grupo y luego revisa:
 
 ```bash
-tail -20 /Users/kevin/telegram-video-downloader/downloader.log
+tail -20 /Users/kevin/Projectos/Mio/telegram-video-downloader/downloader.log
 ```
 
 O comprueba si aparece un archivo nuevo en la carpeta configurada en `DOWNLOAD_DIR`.

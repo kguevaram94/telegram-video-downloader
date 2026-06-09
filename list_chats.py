@@ -15,6 +15,7 @@ load_dotenv(ROOT / "config.env")
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 SESSION_NAME = os.getenv("SESSION_NAME", str(ROOT / "telegram_session"))
+DEVICE_NAME = os.getenv("NOTIFY_APP_NAME", "Telegram Downloader")
 
 
 async def main() -> None:
@@ -22,7 +23,7 @@ async def main() -> None:
         print("Crea config.env a partir de config.env.example y rellena API_ID y API_HASH.")
         sys.exit(1)
 
-    client = TelegramClient(SESSION_NAME, int(API_ID), API_HASH)
+    client = TelegramClient(SESSION_NAME, int(API_ID), API_HASH, device_model=DEVICE_NAME)
     await client.start()
 
     print("\nTus chats (busca el grupo donde reenvías los videos):\n")

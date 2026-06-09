@@ -352,7 +352,7 @@ async def main() -> None:
     downloaded_ids = load_state()
     manager = DownloadManager(downloaded_ids)
 
-    client = TelegramClient(SESSION_NAME, api_id, api_hash)
+    client = TelegramClient(SESSION_NAME, api_id, api_hash, device_model=NOTIFY_APP_NAME)
     await client.start()
     worker_task = asyncio.create_task(manager.worker())
 
