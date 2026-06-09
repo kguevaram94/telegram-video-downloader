@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telegram Downloader</title>
+  <link rel="icon" type="image/png" href="/static/icon.png">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1117;
+      --panel: #171a22;
+      --border: #2a3140;
+      --text: #e8ecf4;
+      --muted: #9aa4b8;
+      --ok: #3ecf8e;
+      --bad: #ff6b6b;
+      --accent: #5b8cff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.5rem;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin-top: 4px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+    }
+
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 0.95rem;
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--bad);
+      box-shadow: 0 0 12px rgba(255, 107, 107, 0.35);
+    }
+
+    .dot.ok {
+      background: var(--ok);
+      box-shadow: 0 0 12px rgba(62, 207, 142, 0.35);
+    }
+
+    .meta {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.5;
+      word-break: break-all;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    button {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    button:hover { filter: brightness(1.08); }
+
+    button.folder-btn {
+      width: 100%;
+      margin-top: 12px;
+    }
+
+    .log-box {
+      background: #0b0d12;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      height: 420px;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.85rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+
+    .log-line { margin: 0 0 4px; color: #d7deea; }
+    .empty { color: var(--muted); }
+
+    .progress-line {
+      background: #0b0d12;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.85rem;
+      line-height: 1.45;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .progress-line.active {
+      color: #9fd0ff;
+      border-color: #35507a;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Telegram Video Downloader</h1>
+        <div class="subtitle">Estado del servicio y logs en tiempo real</div>
+      </div>
+      <button id="refreshBtn" class="primary">Actualizar</button>
+    </header>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Estado</h2>
+        <div class="status-row">
+          <span id="statusDot" class="dot"></span>
+          <span id="statusText">Comprobando...</span>
+        </div>
+        <div id="statusMeta" class="meta"></div>
+      </section>
+
+      <section class="card">
+        <h2>Servicio macOS</h2>
+        <div id="serviceMeta" class="meta">Cargando...</div>
+      </section>
+
+      <section class="card">
+        <h2>Descargas</h2>
+        <div id="downloadMeta" class="meta">Cargando...</div>
+        <button id="openDestCardBtn" class="folder-btn primary">Abrir carpeta de destino</button>
+      </section>
+    </div>
+
+    <div class="actions">
+      <button id="startBtn">Iniciar</button>
+      <button id="stopBtn">Detener</button>
+      <button id="restartBtn">Reiniciar</button>
+    </div>
+
+    <section class="card">
+      <h2>Logs</h2>
+      <div id="progressLine" class="progress-line empty">Sin descarga activa</div>
+      <div id="logBox" class="log-box"><div class="empty">Cargando logs...</div></div>
+    </section>
+  </div>
+
+  <script>
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+    const statusMeta = document.getElementById("statusMeta");
+    const serviceMeta = document.getElementById("serviceMeta");
+    const downloadMeta = document.getElementById("downloadMeta");
+    const logBox = document.getElementById("logBox");
+    const progressLine = document.getElementById("progressLine");
+
+    function renderProgress(line) {
+      if (line) {
+        progressLine.textContent = line;
+        progressLine.classList.add("active");
+        progressLine.classList.remove("empty");
+        return;
+      }
+
+      progressLine.textContent = "Sin descarga activa";
+      progressLine.classList.remove("active");
+      progressLine.classList.add("empty");
+    }
+
+    async function loadProgress() {
+      const response = await fetch("/api/progress");
+      const data = await response.json();
+      renderProgress(data.line);
+    }
+
+    function renderLogs(lines) {
+      if (!lines.length) {
+        logBox.innerHTML = '<div class="empty">(sin entradas)</div>';
+        return;
+      }
+      logBox.innerHTML = lines.map((line) => `<div class="log-line">${escapeHtml(line)}</div>`).join("");
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    function escapeHtml(value) {
+      return value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    async function loadStatus() {
+      const response = await fetch("/api/status");
+      const data = await response.json();
+
+      const healthy = data.healthy;
+      statusDot.classList.toggle("ok", healthy);
+      statusText.textContent = healthy ? "Activo" : "Detenido o con problemas";
+
+      statusMeta.innerHTML = [
+        `PID: ${data.process.pid ?? "—"}`,
+        `LaunchAgent: ${data.launch_agent.loaded ? "cargado" : "no cargado"}`,
+        `Estado launchd: ${data.launch_agent.state ?? "—"}`,
+      ].join("<br>");
+
+      serviceMeta.innerHTML = [
+        `Label: ${data.launch_agent.label}`,
+        `Plist: ${data.launch_agent.plist_path}`,
+        `Instalado: ${data.launch_agent.installed ? "sí" : "no"}`,
+      ].join("<br>");
+
+      downloadMeta.innerHTML = [
+        `Carpeta: ${data.download_dir}`,
+        `Log: ${data.log_path}`,
+      ].join("<br>");
+
+      renderProgress(data.progress_line);
+      renderLogs(data.recent_log || []);
+    }
+
+    async function postAction(url) {
+      const response = await fetch(url, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) {
+        alert(data.error || "No se pudo completar la acción");
+        return;
+      }
+      await loadStatus();
+    }
+
+    async function openDestinationFolder() {
+      await postAction("/api/open-downloads");
+    }
+
+    document.getElementById("refreshBtn").addEventListener("click", loadStatus);
+    document.getElementById("openDestCardBtn").addEventListener("click", openDestinationFolder);
+    document.getElementById("startBtn").addEventListener("click", () => postAction("/api/service/start"));
+    document.getElementById("stopBtn").addEventListener("click", () => postAction("/api/service/stop"));
+    document.getElementById("restartBtn").addEventListener("click", () => postAction("/api/service/restart"));
+
+    function connectLogStream() {
+      const source = new EventSource("/api/logs/stream");
+      const lines = [];
+
+      source.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        const line = payload.line;
+        const progressMatch = /(?:\[\+\d+ en cola\] )?.+: *\d+% /.test(line);
+        if (progressMatch) {
+          renderProgress(line);
+          return;
+        }
+
+        lines.push(line);
+        if (lines.length > 500) lines.shift();
+        renderLogs(lines);
+      };
+
+      source.onerror = () => {
+        source.close();
+        setTimeout(connectLogStream, 2000);
+      };
+    }
+
+    loadStatus();
+    loadProgress();
+    connectLogStream();
+    setInterval(loadStatus, 10000);
+    setInterval(loadProgress, 500);
+  </script>
+</body>
+</html>
