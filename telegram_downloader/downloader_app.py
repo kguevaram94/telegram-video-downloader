@@ -83,6 +83,9 @@ async def main() -> None:
     )
     await client.start()
     worker_task = asyncio.create_task(manager.worker())
+    queue_task = asyncio.create_task(
+        manager.poll_manual_queue(client, config.chat_id),
+    )
 
     try:
         await _run_monitor(
@@ -93,5 +96,6 @@ async def main() -> None:
         )
     except Exception:
         worker_task.cancel()
+        queue_task.cancel()
         await client.disconnect()
         sys.exit(1)

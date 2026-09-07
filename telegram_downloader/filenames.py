@@ -85,8 +85,28 @@ def get_original_filename(message: Message) -> str:
     return f"video_{date}_{message.id}{ext}"
 
 
+def month_dir_for_message(message: Message, download_dir: Path) -> Path:
+    return download_dir / message.date.strftime("%Y-%m")
+
+
+def base_target_path(message: Message, download_dir: Path) -> Path:
+    return month_dir_for_message(message, download_dir) / get_original_filename(message)
+
+
+def find_message_file(message: Message, download_dir: Path) -> Path | None:
+    base = base_target_path(message, download_dir)
+    if base.exists():
+        return base
+
+    alternate = base.parent / f"{base.stem}_{message.id}{base.suffix}"
+    if alternate.exists():
+        return alternate
+
+    return None
+
+
 def resolve_target_path(message: Message, download_dir: Path) -> Path:
-    month_dir = download_dir / message.date.strftime("%Y-%m")
+    month_dir = month_dir_for_message(message, download_dir)
     month_dir.mkdir(parents=True, exist_ok=True)
 
     path = month_dir / get_original_filename(message)

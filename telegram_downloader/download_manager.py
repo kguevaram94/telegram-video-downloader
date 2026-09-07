@@ -8,8 +8,9 @@ from telethon import TelegramClient
 from telethon.tl.custom.message import Message
 
 from telegram_downloader.config import AppConfig
-from telegram_downloader.filenames import resolve_target_path
+from telegram_downloader.filenames import find_message_file, resolve_target_path
 from telegram_downloader.formatting import format_size
+from telegram_downloader.manual_queue import ManualDownloadRequest, take_pending
 from telegram_downloader.notifications import notify_async
 from telegram_downloader.progress import ProgressFileStore, ProgressReporter
 from telegram_downloader.state import save_downloaded_ids
@@ -20,7 +21,9 @@ class DownloadManager:
     def __init__(self, config: AppConfig, downloaded_ids: set[int]) -> None:
         self._config = config
         self.downloaded_ids = downloaded_ids
-        self._queue: asyncio.Queue[tuple[TelegramClient, Message]] = asyncio.Queue()
+        self._queue: asyncio.Queue[tuple[TelegramClient, Message, bool]] = (
+            asyncio.Queue()
+        )
         self._queued_ids: set[int] = set()
         self._in_progress_ids: set[int] = set()
         self._progress_store = ProgressFileStore(config.progress_file)
@@ -29,24 +32,47 @@ class DownloadManager:
     def queue_waiting(self) -> int:
         return self._queue.qsize()
 
-    async def enqueue(self, client: TelegramClient, message: Message) -> None:
-        if message.id in self.downloaded_ids:
+    async def wait_until_idle(self) -> None:
+        await self._queue.join()
+
+    async def enqueue(
+        self,
+        client: TelegramClient,
+        message: Message,
+        *,
+        replace: bool = False,
+    ) -> None:
+        if message.id in self.downloaded_ids and not replace:
             return
         if message.id in self._queued_ids or message.id in self._in_progress_ids:
             return
 
         self._queued_ids.add(message.id)
-        await self._queue.put((client, message))
+        await self._queue.put((client, message, replace))
         await self._notify_enqueued(message)
+
+    async def enqueue_by_id(
+        self,
+        client: TelegramClient,
+        chat_id: int,
+        message_id: int,
+        *,
+        replace: bool = False,
+    ) -> bool:
+        message = await client.get_messages(chat_id, ids=message_id)
+        if message is None or not is_video_message(message):
+            return False
+        await self.enqueue(client, message, replace=replace)
+        return True
 
     async def worker(self) -> None:
         while True:
-            client, message = await self._queue.get()
+            client, message, replace = await self._queue.get()
             self._queued_ids.discard(message.id)
             self._in_progress_ids.add(message.id)
 
             try:
-                await self._download_one(client, message)
+                await self._download_one(client, message, replace=replace)
             except Exception as exc:
                 self._progress_store.clear()
                 self._progress.finish(f"Error mensaje {message.id}: {exc}")
@@ -54,6 +80,35 @@ class DownloadManager:
             finally:
                 self._in_progress_ids.discard(message.id)
                 self._queue.task_done()
+
+    async def poll_manual_queue(
+        self,
+        client: TelegramClient,
+        chat_id: int,
+    ) -> None:
+        while True:
+            await asyncio.sleep(2)
+            pending = take_pending(self._config.manual_queue_file)
+            for request in pending:
+                await self._enqueue_manual_request(client, chat_id, request)
+
+    async def _enqueue_manual_request(
+        self,
+        client: TelegramClient,
+        chat_id: int,
+        request: ManualDownloadRequest,
+    ) -> None:
+        try:
+            await self.enqueue_by_id(
+                client,
+                chat_id,
+                request.message_id,
+                replace=request.replace,
+            )
+        except Exception as exc:
+            self._progress.finish(
+                f"Error encolando mensaje {request.message_id}: {exc}"
+            )
 
     async def backfill(
         self,
@@ -97,9 +152,18 @@ class DownloadManager:
             app_name=self._config.notify_app_name,
         )
 
-    async def _download_one(self, client: TelegramClient, message: Message) -> None:
-        if message.id in self.downloaded_ids:
+    async def _download_one(
+        self,
+        client: TelegramClient,
+        message: Message,
+        *,
+        replace: bool = False,
+    ) -> None:
+        if message.id in self.downloaded_ids and not replace:
             return
+
+        if replace:
+            self._remove_existing_download(message)
 
         dest = resolve_target_path(message, self._config.download_dir)
         total_size = message.file.size if message.file else None
@@ -134,3 +198,9 @@ class DownloadManager:
             enabled=self._config.notify_enabled,
             app_name=self._config.notify_app_name,
         )
+
+    def _remove_existing_download(self, message: Message) -> None:
+        existing = find_message_file(message, self._config.download_dir)
+        if existing is not None:
+            existing.unlink()
+        self.downloaded_ids.discard(message.id)

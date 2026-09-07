@@ -29,6 +29,7 @@ class AppConfig:
     session_name: str
     state_file: Path
     progress_file: Path
+    manual_queue_file: Path
     notify_enabled: bool
     notify_app_name: str
     dashboard_host: str
@@ -70,6 +71,9 @@ def load_config(*, require_chat_id: bool = False) -> AppConfig:
         session_name=os.getenv("SESSION_NAME", str(ROOT / "telegram_session")),
         state_file=Path(os.getenv("STATE_FILE", str(ROOT / "downloaded.json"))),
         progress_file=Path(os.getenv("PROGRESS_FILE", str(ROOT / "downloader.progress"))),
+        manual_queue_file=Path(
+            os.getenv("MANUAL_QUEUE_FILE", str(ROOT / "manual_download_queue.json"))
+        ),
         notify_enabled=_parse_bool(os.getenv("NOTIFY"), default=True),
         notify_app_name=os.getenv("NOTIFY_APP_NAME", "Telegram Downloader"),
         dashboard_host=os.getenv("DASHBOARD_HOST", "127.0.0.1"),

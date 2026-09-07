@@ -8,9 +8,10 @@ import os
 from typing import TypedDict
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from telegram_downloader.config import AppConfig, load_config
 from telegram_downloader.dashboard.logs import read_log_tail, read_progress_line
@@ -23,6 +24,18 @@ from telegram_downloader.dashboard.service import (
     get_launch_agent_status,
     run_command,
 )
+from telegram_downloader.dashboard.stats import (
+    format_directory_size,
+    get_directory_size_bytes,
+    get_downloaded_count,
+)
+from telegram_downloader.dashboard.telegram_service import (
+    TelegramNotConfiguredError,
+    TelegramSessionBusyError,
+    download_messages_directly,
+    list_video_messages,
+)
+from telegram_downloader.manual_queue import ManualDownloadRequest, append_requests
 
 
 class StatusPayload(TypedDict):
@@ -33,6 +46,18 @@ class StatusPayload(TypedDict):
     progress_line: str | None
     recent_log: list[str]
     healthy: bool
+    downloaded_count: int
+    download_dir_size_bytes: int | None
+    download_dir_size_label: str | None
+
+
+class DownloadMessagesRequest(BaseModel):
+    message_ids: list[int] = Field(min_length=1)
+    replace_ids: list[int] = Field(default_factory=list)
+
+
+def _is_downloader_running() -> bool:
+    return get_downloader_process()["running"]
 
 
 def create_app(config: AppConfig, service_paths: ServicePaths) -> FastAPI:
@@ -42,6 +67,7 @@ def create_app(config: AppConfig, service_paths: ServicePaths) -> FastAPI:
     def build_status() -> StatusPayload:
         process = get_downloader_process()
         launch_agent = get_launch_agent_status(service_paths)
+        dir_size = get_directory_size_bytes(config.download_dir)
         return {
             "process": process,
             "launch_agent": launch_agent,
@@ -50,11 +76,20 @@ def create_app(config: AppConfig, service_paths: ServicePaths) -> FastAPI:
             "progress_line": read_progress_line(config.progress_file),
             "recent_log": read_log_tail(config.log_path, max_lines=8),
             "healthy": process["running"] and launch_agent["loaded"],
+            "downloaded_count": get_downloaded_count(config.state_file),
+            "download_dir_size_bytes": dir_size,
+            "download_dir_size_label": format_directory_size(dir_size),
         }
 
     @app.get("/")
     async def index() -> FileResponse:
-        return FileResponse(config.static_dir / "index.html")
+        return FileResponse(
+            config.static_dir / "index.html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+            },
+        )
 
     @app.get("/api/status")
     async def status() -> JSONResponse:
@@ -149,6 +184,78 @@ def create_app(config: AppConfig, service_paths: ServicePaths) -> FastAPI:
         if kick.returncode == 0:
             return JSONResponse({"ok": True, "status": build_status()})
         return await service_start()
+
+    @app.get("/api/messages")
+    async def messages(
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> JSONResponse:
+        try:
+            items = await list_video_messages(config, limit=limit)
+        except TelegramSessionBusyError as exc:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "session_busy": True,
+                },
+                status_code=503,
+            )
+        except TelegramNotConfiguredError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+        return JSONResponse({
+            "ok": True,
+            "messages": [item.to_dict() for item in items],
+            "downloader_running": _is_downloader_running(),
+        })
+
+    @app.post("/api/messages/download")
+    async def download_messages(payload: DownloadMessagesRequest) -> JSONResponse:
+        replace_ids = set(payload.replace_ids)
+        unique_ids = list(dict.fromkeys(payload.message_ids))
+
+        if _is_downloader_running():
+            requests = [
+                ManualDownloadRequest(
+                    message_id=message_id,
+                    replace=message_id in replace_ids,
+                )
+                for message_id in unique_ids
+            ]
+            append_requests(config.manual_queue_file, requests)
+            return JSONResponse({
+                "ok": True,
+                "mode": "queued",
+                "queued": len(requests),
+                "message": (
+                    "Descargas encoladas. El servicio automático las procesará en breve."
+                ),
+            })
+
+        try:
+            result = await download_messages_directly(
+                config,
+                unique_ids,
+                replace_ids,
+            )
+        except TelegramSessionBusyError as exc:
+            return JSONResponse(
+                {"ok": False, "error": str(exc), "session_busy": True},
+                status_code=503,
+            )
+        except TelegramNotConfiguredError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+        return JSONResponse({
+            "ok": True,
+            "mode": "direct",
+            "queued": result["queued"],
+            "skipped": result["skipped"],
+        })
 
     return app
 
