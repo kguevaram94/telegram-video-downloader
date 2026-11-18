@@ -192,17 +192,24 @@ function renderStatus(data) {
   els.folderMeta.textContent = data.download_dir || "—";
   els.videosNavCount.textContent = String(state.messages.length || data.downloaded_count || 0);
 
+  const supervisor = data.supervisor || data.launch_agent || {};
+  const backendLabel = supervisor.backend === "process" ? "Proceso (Docker/Linux)" : "macOS LaunchAgent";
   els.statusMeta.innerHTML = [
     kv("PID", data.process?.pid ?? "—"),
-    kv("LaunchAgent", data.launch_agent?.loaded ? "cargado" : "no cargado"),
-    kv("Estado launchd", data.launch_agent?.state ?? "—"),
+    kv("Backend", backendLabel),
+    kv("Estado", supervisor.state ?? "—"),
   ].join("");
 
   els.serviceMeta.innerHTML = [
-    kv("Label", data.launch_agent?.label ?? "—"),
-    kv("Plist", data.launch_agent?.plist_path ?? "—"),
-    kv("Instalado", data.launch_agent?.installed ? "sí" : "no"),
+    kv("Modo", backendLabel),
+    kv("Label", supervisor.label ?? "—"),
+    kv("Detalle", supervisor.detail || supervisor.plist_path || "—"),
+    kv("Disponible", supervisor.installed ? "sí" : "no"),
   ].join("");
+
+  const canOpen = Boolean(data.can_open_downloads);
+  document.getElementById("openDestCardBtn").hidden = !canOpen;
+  document.getElementById("openDestSettingsBtn").hidden = !canOpen;
 
   els.downloadMeta.innerHTML = [
     kv("Carpeta", data.download_dir ?? "—"),

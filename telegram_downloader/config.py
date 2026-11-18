@@ -78,6 +78,6 @@ def load_config(*, require_chat_id: bool = False) -> AppConfig:
         notify_app_name=os.getenv("NOTIFY_APP_NAME", "Telegram Downloader"),
         dashboard_host=os.getenv("DASHBOARD_HOST", "127.0.0.1"),
         dashboard_port=int(os.getenv("DASHBOARD_PORT", "8765")),
-        log_path=ROOT / "downloader.log",
+        log_path=Path(os.getenv("LOG_PATH", str(ROOT / "downloader.log"))),
         static_dir=ROOT / "static",
     )

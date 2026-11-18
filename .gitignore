@@ -224,3 +224,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Docker runtime data
+/data/
+/downloads/
+!/data/.gitkeep
+!/downloads/.gitkeep

@@ -4,8 +4,8 @@ Monitor automático de un grupo privado de Telegram. Cuando reenvías un video a
 
 ## Requisitos
 
-- macOS
-- Python 3.9+
+- macOS (uso local) o NAS/Linux con Docker (uso 24/7)
+- Python 3.9+ (solo para uso local sin Docker)
 - Cuenta de Telegram con acceso al grupo privado
 - Credenciales de API (`api_id` y `api_hash`) desde [my.telegram.org](https://my.telegram.org/apps)
 
@@ -42,6 +42,84 @@ python3 list_chats.py
 ```
 
 La primera vez pedirá teléfono y código de verificación. Busca tu grupo en la lista y copia su ID (suele ser un número negativo) a `CHAT_ID`.
+
+
+## Despliegue en NAS (Docker)
+
+Pensado para Ugreen NAS / cualquier host con Docker Compose. El contenedor ejecuta el descargador y el panel web, con reinicio automático.
+
+### 1. Preparar configuración y sesión
+
+En tu Mac (una sola vez, si aún no tienes sesión):
+
+```bash
+cp config.env.example config.env
+# Edita API_ID, API_HASH y CHAT_ID
+python3 list_chats.py   # genera telegram_session.session si hace falta
+```
+
+Copia al NAS (o al directorio del proyecto que desplegarás):
+
+```bash
+mkdir -p data downloads
+cp config.env data/../config.env
+cp telegram_session.session data/telegram_session.session
+cp downloaded.json data/downloaded.json   # si ya tienes historial
+```
+
+`config.env` debe quedar en la raíz del proyecto (junto a `docker-compose.yml`). La sesión y el estado viven en `./data/`.
+
+### 2. Elegir carpeta de videos en el NAS
+
+Por defecto Compose monta `./downloads` → `/data/videos`.
+
+Para usar una carpeta compartida del NAS:
+
+```bash
+export VIDEO_DIR=/volume1/Videos/Telegram   # ajusta a tu ruta real en UGOS
+```
+
+O crea un archivo `.env` junto a `docker-compose.yml`:
+
+```env
+VIDEO_DIR=/volume1/Videos/Telegram
+DASHBOARD_PORT=8765
+```
+
+### 3. Arrancar
+
+```bash
+docker compose up -d --build
+```
+
+Panel: `http://IP_DEL_NAS:8765`
+
+Comprobar logs:
+
+```bash
+docker compose logs -f
+# o
+tail -f data/downloader.log
+```
+
+### 4. Operación habitual
+
+| Acción | Comando |
+|--------|---------|
+| Ver estado | `docker compose ps` |
+| Parar | `docker compose stop` |
+| Arrancar | `docker compose start` |
+| Reiniciar | `docker compose restart` |
+| Actualizar código | `docker compose up -d --build` |
+
+Desde el panel web también puedes iniciar/detener/reiniciar el descargador (modo `process`).
+
+### Notas NAS
+
+- El panel escucha en `0.0.0.0` dentro del contenedor (accesible en la LAN).
+- Las notificaciones macOS quedan desactivadas.
+- No expongas el puerto 8765 a Internet sin protección (VPN o reverse proxy con auth).
+- Si migraste la sesión desde el Mac, no ejecutes el downloader a la vez en ambos sitios: Telegram solo permite una sesión activa de Telethon por archivo `.session`.
 
 ## Uso manual
 
@@ -291,6 +369,9 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.telegram.video-downl
 | `dashboard.log` | Log del panel web |
 | `com.telegram.video-downloader.plist` | Servicio de arranque automático |
 | `com.telegram.downloader-dashboard.plist` | Arranque automático del panel |
+| `Dockerfile` / `docker-compose.yml` | Despliegue 24/7 en NAS/Docker |
+| `data/` | Sesión, estado y logs en Docker |
+| `downloads/` | Destino local por defecto de videos en Docker |
 
 ## Seguridad
 

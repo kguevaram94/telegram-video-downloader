@@ -1,0 +1,22 @@
+.git
+.cursor
+.DS_Store
+__pycache__
+*.py[cod]
+*.log
+*.session
+*.session-journal
+downloaded.json
+downloader.progress
+manual_download_queue.json
+manual_download_queue.lock
+data/
+downloads/
+AppIcon.iconset/
+Telegram Downloader.app/
+*.plist
+config.env
+dashboard.log
+.venv
+venv/
+.env

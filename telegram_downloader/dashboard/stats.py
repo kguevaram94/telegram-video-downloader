@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -36,9 +37,12 @@ def get_directory_size_bytes(path: Path) -> int | None:
 
 
 def _measure_directory_size_bytes(path: Path) -> int | None:
+    du_binary = shutil.which("du")
+    if du_binary is None:
+        return None
     try:
         result = subprocess.run(
-            ["/usr/bin/du", "-sk", str(path)],
+            [du_binary, "-sk", str(path)],
             capture_output=True,
             text=True,
             timeout=30,

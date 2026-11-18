@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import sys
 from typing import TypedDict
 
 import uvicorn
@@ -16,13 +16,16 @@ from pydantic import BaseModel, Field
 from telegram_downloader.config import AppConfig, load_config
 from telegram_downloader.dashboard.logs import read_log_tail, read_progress_line
 from telegram_downloader.dashboard.service import (
-    LaunchAgentStatus,
     ProcessStatus,
     ServicePaths,
+    SupervisorStatus,
     build_service_paths,
     get_downloader_process,
     get_launch_agent_status,
+    restart_downloader,
     run_command,
+    start_downloader,
+    stop_downloader,
 )
 from telegram_downloader.dashboard.stats import (
     format_directory_size,
@@ -40,7 +43,8 @@ from telegram_downloader.manual_queue import ManualDownloadRequest, append_reque
 
 class StatusPayload(TypedDict):
     process: ProcessStatus
-    launch_agent: LaunchAgentStatus
+    launch_agent: SupervisorStatus
+    supervisor: SupervisorStatus
     download_dir: str
     log_path: str
     progress_line: str | None
@@ -49,6 +53,7 @@ class StatusPayload(TypedDict):
     downloaded_count: int
     download_dir_size_bytes: int | None
     download_dir_size_label: str | None
+    can_open_downloads: bool
 
 
 class DownloadMessagesRequest(BaseModel):
@@ -60,25 +65,33 @@ def _is_downloader_running() -> bool:
     return get_downloader_process()["running"]
 
 
+def _is_healthy(process: ProcessStatus, supervisor: SupervisorStatus) -> bool:
+    if supervisor["backend"] == "process":
+        return process["running"]
+    return process["running"] and supervisor["loaded"]
+
+
 def create_app(config: AppConfig, service_paths: ServicePaths) -> FastAPI:
     app = FastAPI(title="Telegram Video Downloader")
     app.mount("/static", StaticFiles(directory=config.static_dir), name="static")
 
     def build_status() -> StatusPayload:
         process = get_downloader_process()
-        launch_agent = get_launch_agent_status(service_paths)
+        supervisor = get_launch_agent_status(service_paths)
         dir_size = get_directory_size_bytes(config.download_dir)
         return {
             "process": process,
-            "launch_agent": launch_agent,
+            "launch_agent": supervisor,
+            "supervisor": supervisor,
             "download_dir": str(config.download_dir),
             "log_path": str(config.log_path),
             "progress_line": read_progress_line(config.progress_file),
             "recent_log": read_log_tail(config.log_path, max_lines=8),
-            "healthy": process["running"] and launch_agent["loaded"],
+            "healthy": _is_healthy(process, supervisor),
             "downloaded_count": get_downloaded_count(config.state_file),
             "download_dir_size_bytes": dir_size,
             "download_dir_size_label": format_directory_size(dir_size),
+            "can_open_downloads": sys.platform == "darwin",
         }
 
     @app.get("/")
@@ -145,6 +158,17 @@ def create_app(config: AppConfig, service_paths: ServicePaths) -> FastAPI:
 
     @app.post("/api/open-downloads")
     async def open_downloads() -> JSONResponse:
+        if sys.platform != "darwin":
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": (
+                        "Abrir carpeta solo está disponible en macOS. "
+                        f"Ruta: {config.download_dir}"
+                    ),
+                },
+                status_code=400,
+            )
         if not config.download_dir.exists():
             config.download_dir.mkdir(parents=True, exist_ok=True)
         run_command(["open", str(config.download_dir)])
@@ -152,38 +176,24 @@ def create_app(config: AppConfig, service_paths: ServicePaths) -> FastAPI:
 
     @app.post("/api/service/start")
     async def service_start() -> JSONResponse:
-        if not service_paths.plist_path.exists():
-            return JSONResponse(
-                {"ok": False, "error": "LaunchAgent no instalado"},
-                status_code=400,
-            )
-
-        run_command(["launchctl", "bootout", service_paths.service_label])
-        result = run_command([
-            "launchctl",
-            "bootstrap",
-            f"gui/{os.getuid()}",
-            str(service_paths.plist_path),
-        ])
-        if result.returncode != 0:
-            error = result.stderr.strip() or result.stdout.strip()
+        ok, error = start_downloader(service_paths)
+        if not ok:
             return JSONResponse({"ok": False, "error": error}, status_code=500)
         return JSONResponse({"ok": True, "status": build_status()})
 
     @app.post("/api/service/stop")
     async def service_stop() -> JSONResponse:
-        result = run_command(["launchctl", "bootout", service_paths.service_label])
-        if result.returncode != 0 and "No such process" not in result.stderr:
-            error = result.stderr.strip() or result.stdout.strip()
+        ok, error = stop_downloader(service_paths)
+        if not ok:
             return JSONResponse({"ok": False, "error": error}, status_code=500)
         return JSONResponse({"ok": True, "status": build_status()})
 
     @app.post("/api/service/restart")
     async def service_restart() -> JSONResponse:
-        kick = run_command(["launchctl", "kickstart", "-k", service_paths.service_label])
-        if kick.returncode == 0:
-            return JSONResponse({"ok": True, "status": build_status()})
-        return await service_start()
+        ok, error = restart_downloader(service_paths)
+        if not ok:
+            return JSONResponse({"ok": False, "error": error}, status_code=500)
+        return JSONResponse({"ok": True, "status": build_status()})
 
     @app.get("/api/messages")
     async def messages(
@@ -261,7 +271,7 @@ def create_app(config: AppConfig, service_paths: ServicePaths) -> FastAPI:
 
 
 _config = load_config()
-_service_paths = build_service_paths()
+_service_paths = build_service_paths(log_path=_config.log_path)
 app = create_app(_config, _service_paths)
 
 
