@@ -32,11 +32,12 @@ services:
       PROGRESS_FILE: /app/data/downloader.progress
       MANUAL_QUEUE_FILE: /app/data/manual_download_queue.json
       LOG_PATH: /app/data/downloader.log
+      TMDB_CACHE_FILE: /app/data/tmdb_cache.json
     volumes:
       # Secrets / config (read-only). Do not put API keys in this YAML.
       - /volume1/docker/telegram-downloader/config.env:/app/config.env:ro
       # Persistent app state: Telethon session, download history, manual queue,
-      # progress, logs (and TMDb cache if/when a classifier lands under DATA_DIR).
+      # progress, logs and TMDb cache (TMDB_CACHE_FILE under DATA_DIR).
       - /volume1/docker/telegram-downloader/data:/app/data
       # Entire media library — single mount keeps renames on one filesystem.
       - /volume1/Media:/data/media

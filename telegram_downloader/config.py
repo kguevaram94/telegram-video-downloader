@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -18,6 +18,15 @@ def _parse_bool(value: str | None, default: bool) -> bool:
     if value is None:
         return default
     return value.lower() in _TRUTHY
+
+
+def _parse_float(value: str | None, default: float) -> float:
+    if value is None or value.strip() == "":
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Valor numérico inválido: {value!r}") from exc
 
 
 @dataclass(frozen=True)
@@ -36,11 +45,19 @@ class AppConfig:
     dashboard_port: int
     log_path: Path
     static_dir: Path
+    tmdb_api_key: str | None = field(default=None, repr=False)
+    tmdb_enabled: bool = False
+    tmdb_confidence_threshold: float = 0.72
+    tmdb_ambiguity_delta: float = 0.08
+    tmdb_language: str = "es-ES"
+    tmdb_cache_file: Path = field(default_factory=lambda: ROOT / "tmdb_cache.json")
+
+    @property
+    def classification_enabled(self) -> bool:
+        return self.tmdb_enabled and bool(self.tmdb_api_key)
 
 
-def load_config(*, require_chat_id: bool = False) -> AppConfig:
-    load_dotenv(ROOT / "config.env")
-
+def _require_credentials(*, require_chat_id: bool) -> tuple[str, str, str | None]:
     api_id_raw = os.getenv("API_ID")
     api_hash = os.getenv("API_HASH")
     chat_id_raw = os.getenv("CHAT_ID")
@@ -59,7 +76,35 @@ def load_config(*, require_chat_id: bool = False) -> AppConfig:
         sys.exit(1)
 
     assert api_id_raw is not None and api_hash is not None
+    return api_id_raw, api_hash, chat_id_raw
+
+
+def _load_tmdb_settings() -> tuple[str | None, bool, float, float, str, Path]:
+    tmdb_api_key = (os.getenv("TMDB_API_KEY") or "").strip() or None
+    confidence = _parse_float(os.getenv("TMDB_CONFIDENCE_THRESHOLD"), 0.72)
+    ambiguity = _parse_float(os.getenv("TMDB_AMBIGUITY_DELTA"), 0.08)
+    if not 0.0 <= confidence <= 1.0:
+        raise RuntimeError("TMDB_CONFIDENCE_THRESHOLD debe estar entre 0 y 1")
+    if not 0.0 <= ambiguity <= 1.0:
+        raise RuntimeError("TMDB_AMBIGUITY_DELTA debe estar entre 0 y 1")
+
+    enabled = _parse_bool(os.getenv("TMDB_ENABLED"), default=tmdb_api_key is not None)
+    language = os.getenv("TMDB_LANGUAGE", "es-ES")
+    data_dir = Path(os.getenv("DATA_DIR", str(ROOT / "data")))
+    default_cache = data_dir / "tmdb_cache.json"
+    cache_file = Path(os.getenv("TMDB_CACHE_FILE", str(default_cache)))
+    return tmdb_api_key, enabled, confidence, ambiguity, language, cache_file
+
+
+def load_config(*, require_chat_id: bool = False) -> AppConfig:
+    load_dotenv(ROOT / "config.env")
+    api_id_raw, api_hash, chat_id_raw = _require_credentials(
+        require_chat_id=require_chat_id,
+    )
     chat_id = int(chat_id_raw) if chat_id_raw else None
+    tmdb_api_key, tmdb_enabled, confidence, ambiguity, language, cache_file = (
+        _load_tmdb_settings()
+    )
 
     return AppConfig(
         api_id=int(api_id_raw),
@@ -80,4 +125,10 @@ def load_config(*, require_chat_id: bool = False) -> AppConfig:
         dashboard_port=int(os.getenv("DASHBOARD_PORT", "8765")),
         log_path=Path(os.getenv("LOG_PATH", str(ROOT / "downloader.log"))),
         static_dir=ROOT / "static",
+        tmdb_api_key=tmdb_api_key,
+        tmdb_enabled=tmdb_enabled,
+        tmdb_confidence_threshold=confidence,
+        tmdb_ambiguity_delta=ambiguity,
+        tmdb_language=language,
+        tmdb_cache_file=cache_file,
     )

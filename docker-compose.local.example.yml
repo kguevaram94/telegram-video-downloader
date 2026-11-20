@@ -27,6 +27,7 @@ services:
       PROGRESS_FILE: /app/data/downloader.progress
       MANUAL_QUEUE_FILE: /app/data/manual_download_queue.json
       LOG_PATH: /app/data/downloader.log
+      TMDB_CACHE_FILE: /app/data/tmdb_cache.json
     volumes:
       - ./config.env:/app/config.env:ro
       - ./data:/app/data

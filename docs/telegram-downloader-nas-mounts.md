@@ -61,12 +61,22 @@ al mover desde Inbox hacia Movies/Series.
 Con **un** bind `/volume1/Media` → `/data/media`, Inbox y las bibliotecas son
 hermanos en el mismo filesystem del contenedor; el rename atómico funciona.
 
-## Utilidades de path/move en el repo
+## Clasificación TMDb
 
-`telegram_downloader/media_classifier.py` expone solo helpers de rutas y
-`move_without_overwrite` (rename + fallback EXDEV que no borra el origen si
-falla la copia). **No** incluye lógica TMDb/API/caché/umbrales: esa lógica no
-está en ningún remoto/PR de este repositorio.
+`telegram_downloader/media_classifier.py` incluye:
+
+- Helpers de rutas (`media_root_from_download_dir`, `inbox_dir`, `movies_dir`,
+  `series_dir`) y `move_without_overwrite` (rename + fallback EXDEV).
+- Cliente async TMDb (`AsyncTmdbHttpClient`), caché (`PersistentJsonCache` /
+  `CachingTmdbClient`) y `MediaClassifier` con umbral/ambigüedad.
+
+Tras completar la descarga (`.part` → archivo final), las coincidencias van a:
+
+- Películas: `/data/media/Movies/Título (Año)/…`
+- Series: `/data/media/Series/Título/Season NN/…`
+
+Si falla TMDb, hay ambigüedad o no hay confianza suficiente, el archivo permanece
+en `Downloads/Inbox`.
 
 ## Persistencia en `/app/data`
 
@@ -77,6 +87,7 @@ está en ningún remoto/PR de este repositorio.
 | Cola manual | `/app/data/manual_download_queue.json` |
 | Progreso | `/app/data/downloader.progress` |
 | Log | `/app/data/downloader.log` |
+| Caché TMDb | `/app/data/tmdb_cache.json` |
 
 ## Qué no hacer
 

@@ -391,7 +391,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.telegram.video-downl
 | `Dockerfile` / `docker-compose.yml` | Despliegue 24/7 en UGREEN NAS (un bind `/volume1/Media`) |
 | `docker-compose.local.example.yml` | Ejemplo Docker local con rutas relativas |
 | `docs/telegram-downloader-nas-mounts.md` | Tabla de montajes y carpetas previas en UGOS |
-| `telegram_downloader/media_classifier.py` | Helpers de path + `move_without_overwrite` (sin TMDb) |
+| `telegram_downloader/media_classifier.py` | Clasificación TMDb + helpers de path/`move_without_overwrite` |
 | `tests/` | Tests de paths, Inbox y EXDEV |
 | `/volume1/docker/telegram-downloader/data` | Sesión, estado, cola, progreso, logs (en el NAS) |
 

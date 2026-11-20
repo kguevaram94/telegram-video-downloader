@@ -2,6 +2,7 @@ config.env
 telegram_session.session
 telegram_session.session-journal
 downloaded.json
+tmdb_cache.json
 __pycache__/
 dashboard.log
 AppIcon.iconset/
