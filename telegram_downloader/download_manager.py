@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from telethon import TelegramClient
 from telethon.tl.custom.message import Message
 
 from telegram_downloader.config import AppConfig
-from telegram_downloader.filenames import find_message_file, resolve_target_path
+from telegram_downloader.filenames import (
+    find_message_file,
+    get_document_filename,
+    get_message_title,
+    resolve_target_path,
+)
 from telegram_downloader.formatting import format_size
 from telegram_downloader.manual_queue import ManualDownloadRequest, take_pending
+from telegram_downloader.media_classifier import (
+    ClassificationResult,
+    MediaClassifier,
+    build_media_classifier,
+)
 from telegram_downloader.notifications import notify_async
 from telegram_downloader.progress import ProgressFileStore, ProgressReporter
 from telegram_downloader.state import save_downloaded_ids
@@ -28,6 +39,7 @@ class DownloadManager:
         self._in_progress_ids: set[int] = set()
         self._progress_store = ProgressFileStore(config.progress_file)
         self._progress = ProgressReporter(self._progress_store)
+        self._classifier = self._build_classifier(config)
 
     def queue_waiting(self) -> int:
         return self._queue.qsize()
@@ -166,6 +178,17 @@ class DownloadManager:
             self._remove_existing_download(message)
 
         dest = resolve_target_path(message, self._config.download_dir)
+        await self._download_to_inbox(client, message, dest)
+        final_path = await self._classify_downloaded_file(dest, message)
+        self._mark_downloaded(message.id)
+        await self._notify_completed(final_path)
+
+    async def _download_to_inbox(
+        self,
+        client: TelegramClient,
+        message: Message,
+        dest: Path,
+    ) -> None:
         total_size = message.file.size if message.file else None
         temp_dest = dest.with_suffix(dest.suffix + ".part")
         if temp_dest.exists():
@@ -187,20 +210,72 @@ class DownloadManager:
         )
         temp_dest.replace(dest)
 
-        self.downloaded_ids.add(message.id)
+    def _mark_downloaded(self, message_id: int) -> None:
+        self.downloaded_ids.add(message_id)
         save_downloaded_ids(self._config.state_file, self.downloaded_ids)
 
-        file_size = dest.stat().st_size
-        self._progress.finish(f"Completado: {dest.name} ({format_size(file_size)})")
+    async def _notify_completed(self, final_path: Path) -> None:
+        file_size = final_path.stat().st_size
+        self._progress.finish(
+            f"Completado: {final_path.name} ({format_size(file_size)})"
+        )
         await notify_async(
             "Descarga completada",
-            f"{dest.name} ({format_size(file_size)})",
+            f"{final_path.name} ({format_size(file_size)})",
             enabled=self._config.notify_enabled,
             app_name=self._config.notify_app_name,
         )
+
+    async def _classify_downloaded_file(
+        self,
+        dest: Path,
+        message: Message,
+    ) -> Path:
+        if self._classifier is None:
+            return dest
+
+        try:
+            result = await self._classifier.classify_and_relocate(
+                dest,
+                message_text=get_message_title(message),
+                original_filename=get_document_filename(message),
+            )
+        except Exception as exc:
+            self._progress.status(
+                f"Clasificación omitida ({exc.__class__.__name__}): se mantiene Inbox"
+            )
+            return dest
+
+        return self._path_after_classification(dest, result)
+
+    def _path_after_classification(
+        self,
+        dest: Path,
+        result: ClassificationResult,
+    ) -> Path:
+        if result.status == "classified" and result.destination is not None:
+            label = result.match.title if result.match else result.destination.name
+            self._progress.status(f"Clasificado: {label}")
+            return result.destination
+
+        self._progress.status(f"Sin clasificar ({result.reason}): Inbox")
+        return dest
 
     def _remove_existing_download(self, message: Message) -> None:
         existing = find_message_file(message, self._config.download_dir)
         if existing is not None:
             existing.unlink()
         self.downloaded_ids.discard(message.id)
+
+    @staticmethod
+    def _build_classifier(config: AppConfig) -> MediaClassifier | None:
+        if not config.classification_enabled or config.tmdb_api_key is None:
+            return None
+        return build_media_classifier(
+            api_key=config.tmdb_api_key,
+            download_dir=config.download_dir,
+            cache_file=config.tmdb_cache_file,
+            language=config.tmdb_language,
+            confidence_threshold=config.tmdb_confidence_threshold,
+            ambiguity_delta=config.tmdb_ambiguity_delta,
+        )

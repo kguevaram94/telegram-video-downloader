@@ -1,3 +1,16 @@
+# UGREEN NAS DXP2800 / UGOS Pro — exclusive Docker Compose
+# No secrets here: credentials live in config.env (env_file + bind mount).
+#
+# ONE bind mount for the whole media library so Path.replace() never hits EXDEV:
+#   /volume1/Media → /data/media
+#
+# Layout (siblings under the same mount):
+#   /data/media/Downloads/Inbox
+#   /data/media/Movies
+#   /data/media/Series
+#   /data/media/Documentaries
+#   /data/media/Home Videos
+
 services:
   telegram-downloader:
     build: .
@@ -6,23 +19,28 @@ services:
     ports:
       - "${DASHBOARD_PORT:-8765}:8765"
     env_file:
-      - config.env
+      - /volume1/docker/telegram-downloader/config.env
     environment:
       SERVICE_BACKEND: process
       NOTIFY: "false"
       DASHBOARD_HOST: "0.0.0.0"
       DASHBOARD_PORT: "8765"
-      DOWNLOAD_DIR: /data/videos
+      DOWNLOAD_DIR: /data/media/Downloads
       DATA_DIR: /app/data
       SESSION_NAME: /app/data/telegram_session
       STATE_FILE: /app/data/downloaded.json
       PROGRESS_FILE: /app/data/downloader.progress
       MANUAL_QUEUE_FILE: /app/data/manual_download_queue.json
       LOG_PATH: /app/data/downloader.log
+      TMDB_CACHE_FILE: /app/data/tmdb_cache.json
     volumes:
-      - ./config.env:/app/config.env:ro
-      - ./data:/app/data
-      - ${VIDEO_DIR:-./downloads}:/data/videos
+      # Secrets / config (read-only). Do not put API keys in this YAML.
+      - /volume1/docker/telegram-downloader/config.env:/app/config.env:ro
+      # Persistent app state: Telethon session, download history, manual queue,
+      # progress, logs and TMDb cache (TMDB_CACHE_FILE under DATA_DIR).
+      - /volume1/docker/telegram-downloader/data:/app/data
+      # Entire media library — single mount keeps renames on one filesystem.
+      - /volume1/Media:/data/media
     healthcheck:
       test:
         [

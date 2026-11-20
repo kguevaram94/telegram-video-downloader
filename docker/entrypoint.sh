@@ -2,7 +2,12 @@
 set -eu
 
 DATA_DIR="${DATA_DIR:-/app/data}"
-mkdir -p "$DATA_DIR" /data/videos
+mkdir -p "$DATA_DIR" \
+  "${DOWNLOAD_DIR:-/data/media/Downloads}/Inbox" \
+  /data/media/Movies \
+  /data/media/Series \
+  "/data/media/Documentaries" \
+  "/data/media/Home Videos"
 
 if [ ! -f /app/config.env ]; then
   echo "Falta /app/config.env. Monta tu config.env en el contenedor."

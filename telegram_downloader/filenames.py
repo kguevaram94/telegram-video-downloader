@@ -8,6 +8,8 @@ from pathlib import Path
 from telethon.tl.custom.message import Message
 from telethon.tl.types import DocumentAttributeFilename
 
+from telegram_downloader.media_classifier import inbox_dir, library_search_roots
+
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts"})
 
 _MIME_TO_EXT = {
@@ -18,6 +20,7 @@ _MIME_TO_EXT = {
 
 _INVALID_CHARS = re.compile(r'[<>:"/\\|?*]')
 _WHITESPACE = re.compile(r"\s+")
+_MONTH_DIR = re.compile(r"^\d{4}-\d{2}$")
 
 
 def safe_filename(name: str) -> str:
@@ -85,24 +88,84 @@ def get_original_filename(message: Message) -> str:
     return f"video_{date}_{message.id}{ext}"
 
 
+def get_document_filename(message: Message) -> str | None:
+    return _filename_from_document(message)
+
+
 def month_dir_for_message(message: Message, download_dir: Path) -> Path:
-    return download_dir / message.date.strftime("%Y-%m")
+    """Landing path under Downloads/Inbox (YYYY-MM), same mount as Movies/Series."""
+    return inbox_dir(download_dir) / message.date.strftime("%Y-%m")
 
 
 def base_target_path(message: Message, download_dir: Path) -> Path:
     return month_dir_for_message(message, download_dir) / get_original_filename(message)
 
 
-def find_message_file(message: Message, download_dir: Path) -> Path | None:
-    base = base_target_path(message, download_dir)
-    if base.exists():
-        return base
+def _candidate_names(message: Message) -> list[str]:
+    filename = get_original_filename(message)
+    stem_with_id = f"{Path(filename).stem}_{message.id}{Path(filename).suffix}"
+    return [filename, stem_with_id]
 
-    alternate = base.parent / f"{base.stem}_{message.id}{base.suffix}"
-    if alternate.exists():
-        return alternate
 
+def _candidate_paths(message: Message, root: Path) -> list[Path]:
+    filename = get_original_filename(message)
+    stem_with_id = f"{Path(filename).stem}_{message.id}{Path(filename).suffix}"
+    month = message.date.strftime("%Y-%m")
+    return [
+        root / month / filename,
+        root / month / stem_with_id,
+        root / filename,
+        root / stem_with_id,
+    ]
+
+
+def _looks_like_video(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
+
+
+def _find_nested_by_name(root: Path, names: list[str]) -> Path | None:
+    if not root.is_dir():
+        return None
+    wanted = set(names)
+    for path in root.rglob("*"):
+        if path.name in wanted and _looks_like_video(path):
+            return path
     return None
+
+
+def _find_in_legacy_month_dirs(download_dir: Path, names: list[str]) -> Path | None:
+    if not download_dir.is_dir():
+        return None
+    for child in download_dir.iterdir():
+        if not child.is_dir() or not _MONTH_DIR.match(child.name):
+            continue
+        for name in names:
+            candidate = child / name
+            if _looks_like_video(candidate):
+                return candidate
+    return None
+
+
+def find_message_file(message: Message, download_dir: Path) -> Path | None:
+    """Find a downloaded file in Inbox, Movies, Series, or legacy paths."""
+    names = _candidate_names(message)
+    search_roots = list(library_search_roots(download_dir))
+    search_roots.append(download_dir)
+
+    seen: set[Path] = set()
+    for root in search_roots:
+        for candidate in _candidate_paths(message, root):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if _looks_like_video(candidate):
+                return candidate
+
+        nested = _find_nested_by_name(root, names)
+        if nested is not None:
+            return nested
+
+    return _find_in_legacy_month_dirs(download_dir, names)
 
 
 def resolve_target_path(message: Message, download_dir: Path) -> Path:
