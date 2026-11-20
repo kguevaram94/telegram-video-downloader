@@ -1,30 +1,31 @@
 # Telegram Video Downloader
 
-Monitor automático de un grupo privado de Telegram. Cuando reenvías un video al grupo, el script lo descarga en local y lo organiza en carpetas por mes.
+Monitor automático de un grupo privado de Telegram. Pensado para **despliegue exclusivo** en UGREEN NAS DXP2800 (UGOS Pro) con Docker Compose. El contenedor descarga videos y sirve el panel web 24/7.
+
+Detalle de montajes: [docs/telegram-downloader-nas-mounts.md](docs/telegram-downloader-nas-mounts.md).
 
 ## Requisitos
 
-- macOS (uso local) o NAS/Linux con Docker (uso 24/7)
-- Python 3.9+ (solo para uso local sin Docker)
+- UGREEN NAS DXP2800 / UGOS Pro con Docker Compose (despliegue principal)
 - Cuenta de Telegram con acceso al grupo privado
 - Credenciales de API (`api_id` y `api_hash`) desde [my.telegram.org](https://my.telegram.org/apps)
+- Opcional: Python 3.9+ solo para generar la sesión Telethon o uso local puntual
 
-## Instalación
+## Credenciales (`config.env`)
 
 ```bash
-cd /Users/kevin/telegram-video-downloader
-pip3 install -r requirements.txt --user
-cp config.env.example config.env
+cp config.env.example /volume1/docker/telegram-downloader/config.env
 ```
 
-Edita `config.env` con tus valores:
+Edita solo secretos y chat (Compose fija rutas de datos y descarga):
 
 ```env
 API_ID=12345678
 API_HASH=tu_api_hash_aqui
 CHAT_ID=-1001234567890
-DOWNLOAD_DIR=/Users/kevin/Videos/Telegram
 ```
+
+No pongas claves en `docker-compose.yml`.
 
 ### Obtener `api_id` y `api_hash`
 
@@ -44,52 +45,63 @@ python3 list_chats.py
 La primera vez pedirá teléfono y código de verificación. Busca tu grupo en la lista y copia su ID (suele ser un número negativo) a `CHAT_ID`.
 
 
-## Despliegue en NAS (Docker)
+## Despliegue en NAS (Docker) — UGREEN / UGOS Pro
 
-Pensado para Ugreen NAS / cualquier host con Docker Compose. El contenedor ejecuta el descargador y el panel web, con reinicio automático.
+`docker-compose.yml` es **solo NAS**: rutas absolutas UGOS, sin `VIDEO_DIR` ni paths de MacBook.
 
-### 1. Preparar configuración y sesión
-
-En tu Mac (una sola vez, si aún no tienes sesión):
+### 1. Crear carpetas en UGOS Pro
 
 ```bash
-cp config.env.example config.env
-# Edita API_ID, API_HASH y CHAT_ID
-python3 list_chats.py   # genera telegram_session.session si hace falta
+mkdir -p /volume1/Media/Downloads/Inbox \
+         /volume1/Media/Movies \
+         /volume1/Media/Series \
+         /volume1/docker/telegram-downloader/data
 ```
 
-Copia al NAS (o al directorio del proyecto que desplegarás):
+### 2. Configuración y sesión
 
 ```bash
-mkdir -p data downloads
-cp config.env data/../config.env
-cp telegram_session.session data/telegram_session.session
-cp downloaded.json data/downloaded.json   # si ya tienes historial
+cp config.env.example /volume1/docker/telegram-downloader/config.env
+# Edita API_ID, API_HASH y CHAT_ID en ese archivo
 ```
 
-`config.env` debe quedar en la raíz del proyecto (junto a `docker-compose.yml`). La sesión y el estado viven en `./data/`.
-
-### 2. Elegir carpeta de videos en el NAS
-
-Por defecto Compose monta `./downloads` → `/data/videos`.
-
-Para usar una carpeta compartida del NAS:
+Si ya tienes sesión Telethon / historial (p. ej. generados en otro equipo):
 
 ```bash
-export VIDEO_DIR=/volume1/Videos/Telegram   # ajusta a tu ruta real en UGOS
+cp telegram_session.session /volume1/docker/telegram-downloader/data/telegram_session.session
+cp downloaded.json /volume1/docker/telegram-downloader/data/downloaded.json   # si aplica
 ```
 
-O crea un archivo `.env` junto a `docker-compose.yml`:
+Persistencia en `/volume1/docker/telegram-downloader/data`: sesión, `downloaded.json`, cola manual, progreso, logs y caché TMDb (si existe bajo `DATA_DIR`).
 
-```env
-VIDEO_DIR=/volume1/Videos/Telegram
-DASHBOARD_PORT=8765
-```
+### 3. Correspondencia de montajes
 
-### 3. Arrancar
+| Contenedor | NAS |
+|------------|-----|
+| `/data/videos` | `/volume1/Media/Downloads` |
+| `/data/videos/Inbox` | `/volume1/Media/Downloads/Inbox` |
+| `/data/videos/Media/Movies` | `/volume1/Media/Movies` |
+| `/data/videos/Media/Series` | `/volume1/Media/Series` |
+| `/app/data` | `/volume1/docker/telegram-downloader/data` |
+| `/app/config.env` | `/volume1/docker/telegram-downloader/config.env` |
+
+`DOWNLOAD_DIR=/data/videos` dentro del contenedor. El clasificador sigue usando
+`DOWNLOAD_DIR/Media/Movies` y `DOWNLOAD_DIR/Media/Series`; los **overlays** de Compose
+mapean esas rutas a las bibliotecas finales del NAS (evita
+`/volume1/Media/Downloads/Media/Movies` anidado).
+
+### 4. Arrancar
+
+Desde el directorio del repo (con el `docker-compose.yml` de este proyecto):
 
 ```bash
 docker compose up -d --build
+```
+
+Puerto del panel: `DASHBOARD_PORT` (por defecto `8765`). Ejemplo:
+
+```bash
+DASHBOARD_PORT=8765 docker compose up -d --build
 ```
 
 Panel: `http://IP_DEL_NAS:8765`
@@ -99,10 +111,10 @@ Comprobar logs:
 ```bash
 docker compose logs -f
 # o
-tail -f data/downloader.log
+tail -f /volume1/docker/telegram-downloader/data/downloader.log
 ```
 
-### 4. Operación habitual
+### 5. Operación habitual
 
 | Acción | Comando |
 |--------|---------|
@@ -117,9 +129,10 @@ Desde el panel web también puedes iniciar/detener/reiniciar el descargador (mod
 ### Notas NAS
 
 - El panel escucha en `0.0.0.0` dentro del contenedor (accesible en la LAN).
-- Las notificaciones macOS quedan desactivadas.
+- Las notificaciones macOS quedan desactivadas (`NOTIFY=false`).
 - No expongas el puerto 8765 a Internet sin protección (VPN o reverse proxy con auth).
-- Si migraste la sesión desde el Mac, no ejecutes el downloader a la vez en ambos sitios: Telegram solo permite una sesión activa de Telethon por archivo `.session`.
+- Una sola sesión Telethon activa por archivo `.session` (no correr Mac + NAS a la vez con la misma sesión).
+- Docker local de desarrollo (rutas relativas): ver `docker-compose.local.example.yml`.
 
 ## Uso manual
 
@@ -155,13 +168,15 @@ Detalles:
 - Caracteres no válidos (`/`, `:`, etc.) se sustituyen por `_`.
 - Si dos capítulos tienen el mismo nombre, al segundo se le añade el ID del mensaje.
 
-Los videos se guardan en subcarpetas por mes:
+En NAS, `DOWNLOAD_DIR` es `/data/videos` (= `/volume1/Media/Downloads`). La estructura
+interna esperada por el clasificador es:
 
 ```
 DOWNLOAD_DIR/
-  2026-06/
-    Naruto - Capitulo 01.mp4
-    Naruto - Capitulo 02.mp4
+  Inbox/
+  Media/
+    Movies/    → montado a /volume1/Media/Movies
+    Series/    → montado a /volume1/Media/Series
 ```
 
 ## Progreso y cola
@@ -369,9 +384,10 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.telegram.video-downl
 | `dashboard.log` | Log del panel web |
 | `com.telegram.video-downloader.plist` | Servicio de arranque automático |
 | `com.telegram.downloader-dashboard.plist` | Arranque automático del panel |
-| `Dockerfile` / `docker-compose.yml` | Despliegue 24/7 en NAS/Docker |
-| `data/` | Sesión, estado y logs en Docker |
-| `downloads/` | Destino local por defecto de videos en Docker |
+| `Dockerfile` / `docker-compose.yml` | Despliegue 24/7 en UGREEN NAS (rutas absolutas) |
+| `docker-compose.local.example.yml` | Ejemplo Docker local con rutas relativas |
+| `docs/telegram-downloader-nas-mounts.md` | Tabla de montajes y carpetas previas en UGOS |
+| `/volume1/docker/telegram-downloader/data` | Sesión, estado, cola, progreso, logs (en el NAS) |
 
 ## Seguridad
 
@@ -379,11 +395,18 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.telegram.video-downl
 - `api_id` / `api_hash` identifican la aplicación; la sesión equivale a estar logueado en tu cuenta.
 - Usa el script solo con contenido al que tengas acceso y respetando los términos de Telegram.
 
-## Flujo recomendado
+## Flujo recomendado (NAS)
 
-1. Crea la app en my.telegram.org y configura `config.env`.
-2. Ejecuta `list_chats.py` y anota el `CHAT_ID`.
-3. Prueba con `python3 downloader.py` y reenvía un video de prueba.
-4. Opcional: `python3 downloader.py --backfill 50` para videos anteriores.
-5. Instala el LaunchAgent para que quede siempre activo al iniciar sesión.
-6. Opcional: instala el panel (`com.telegram.downloader-dashboard.plist`) y usa `Telegram Downloader.app`.
+1. Crea las carpetas UGOS listadas arriba.
+2. Crea la app en my.telegram.org y configura `/volume1/docker/telegram-downloader/config.env`.
+3. Genera sesión (`list_chats.py` u otro equipo) y cópiala a `.../data/telegram_session.session`.
+4. Anota el `CHAT_ID` en `config.env`.
+5. `docker compose up -d --build` y abre `http://IP_DEL_NAS:8765`.
+6. Reenvía un video de prueba al grupo y verifica Inbox / clasificación.
+
+## Uso local (opcional)
+
+Para desarrollo local sin NAS, puedes usar Python directamente o
+`docker-compose.local.example.yml` (rutas relativas `./data` y `./downloads`).
+Las secciones de LaunchAgent / app macOS más abajo son opcionales y no forman
+parte del despliegue NAS.

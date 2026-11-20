@@ -1,0 +1,47 @@
+# Optional local Docker example (relative paths only).
+# Primary production file is docker-compose.yml (UGREEN NAS / UGOS Pro).
+# Copy to docker-compose.override.yml or run:
+#   docker compose -f docker-compose.local.example.yml up -d --build
+#
+# No secrets in this file — use a local config.env next to the compose file.
+
+services:
+  telegram-downloader:
+    build: .
+    container_name: telegram-video-downloader
+    restart: unless-stopped
+    ports:
+      - "${DASHBOARD_PORT:-8765}:8765"
+    env_file:
+      - config.env
+    environment:
+      SERVICE_BACKEND: process
+      NOTIFY: "false"
+      DASHBOARD_HOST: "0.0.0.0"
+      DASHBOARD_PORT: "8765"
+      DOWNLOAD_DIR: /data/videos
+      DATA_DIR: /app/data
+      SESSION_NAME: /app/data/telegram_session
+      STATE_FILE: /app/data/downloaded.json
+      PROGRESS_FILE: /app/data/downloader.progress
+      MANUAL_QUEUE_FILE: /app/data/manual_download_queue.json
+      LOG_PATH: /app/data/downloader.log
+    volumes:
+      - ./config.env:/app/config.env:ro
+      - ./data:/app/data
+      - ./downloads:/data/videos
+      # Optional local overlays mirroring NAS layout (create dirs first):
+      # - ./library/Movies:/data/videos/Media/Movies
+      # - ./library/Series:/data/videos/Media/Series
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/status', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

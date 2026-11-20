@@ -1,3 +1,12 @@
+# UGREEN NAS DXP2800 / UGOS Pro — exclusive Docker Compose
+# No secrets here: credentials live in config.env (env_file + bind mount).
+#
+# Mount design (avoids nested Downloads/Media/Movies duplicates):
+#   /volume1/Media/Downloads          → /data/videos
+#   /volume1/Media/Movies             → /data/videos/Media/Movies   (overlay)
+#   /volume1/Media/Series             → /data/videos/Media/Series   (overlay)
+# So classifier paths DOWNLOAD_DIR/Media/Movies|Series land on the real libraries.
+
 services:
   telegram-downloader:
     build: .
@@ -6,7 +15,7 @@ services:
     ports:
       - "${DASHBOARD_PORT:-8765}:8765"
     env_file:
-      - config.env
+      - /volume1/docker/telegram-downloader/config.env
     environment:
       SERVICE_BACKEND: process
       NOTIFY: "false"
@@ -20,9 +29,16 @@ services:
       MANUAL_QUEUE_FILE: /app/data/manual_download_queue.json
       LOG_PATH: /app/data/downloader.log
     volumes:
-      - ./config.env:/app/config.env:ro
-      - ./data:/app/data
-      - ${VIDEO_DIR:-./downloads}:/data/videos
+      # Secrets / config (read-only). Do not put API keys in this YAML.
+      - /volume1/docker/telegram-downloader/config.env:/app/config.env:ro
+      # Persistent app state: Telethon session, download history, manual queue,
+      # progress, logs, TMDb cache (if used under DATA_DIR).
+      - /volume1/docker/telegram-downloader/data:/app/data
+      # Downloads root (Inbox → /data/videos/Inbox).
+      - /volume1/Media/Downloads:/data/videos
+      # Classifier destinations: overlay onto final library folders (not under Downloads).
+      - /volume1/Media/Movies:/data/videos/Media/Movies
+      - /volume1/Media/Series:/data/videos/Media/Series
     healthcheck:
       test:
         [
