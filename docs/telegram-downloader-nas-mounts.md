@@ -1,15 +1,20 @@
 # Telegram Downloader — montajes NAS (UGREEN DXP2800 / UGOS Pro)
 
-Despliegue exclusivo en NAS. `docker-compose.yml` usa rutas absolutas UGOS.
+Despliegue exclusivo en NAS. `docker-compose.yml` usa **un solo bind mount** del
+árbol de media para que `Path.replace()` no cruce dispositivos (evita EXDEV).
+
 No contiene secretos: credenciales van en `config.env`.
 
 ## Carpetas a crear antes en UGOS Pro
 
 ```text
+/volume1/Media
 /volume1/Media/Downloads
 /volume1/Media/Downloads/Inbox
 /volume1/Media/Movies
 /volume1/Media/Series
+/volume1/Media/Documentaries
+/volume1/Media/Home Videos
 /volume1/docker/telegram-downloader
 /volume1/docker/telegram-downloader/data
 ```
@@ -26,37 +31,42 @@ Coloca `config.env` en:
 
 | Ruta en contenedor | Ruta en NAS | Rol |
 |--------------------|-------------|-----|
-| `/data/videos` | `/volume1/Media/Downloads` | Raíz `DOWNLOAD_DIR` |
-| `/data/videos/Inbox` | `/volume1/Media/Downloads/Inbox` | Inbox de descargas |
-| `/data/videos/Media/Movies` | `/volume1/Media/Movies` | Destino películas (overlay) |
-| `/data/videos/Media/Series` | `/volume1/Media/Series` | Destino series (overlay) |
-| `/app/data` | `/volume1/docker/telegram-downloader/data` | Sesión, historial, cola, progreso, logs, caché TMDb |
+| `/data/media` | `/volume1/Media` | Biblioteca completa (único bind mount) |
+| `/data/media/Downloads` | `/volume1/Media/Downloads` | `DOWNLOAD_DIR` |
+| `/data/media/Downloads/Inbox` | `/volume1/Media/Downloads/Inbox` | Inbox de descargas |
+| `/data/media/Movies` | `/volume1/Media/Movies` | Películas (hermano de Downloads) |
+| `/data/media/Series` | `/volume1/Media/Series` | Series (hermano de Downloads) |
+| `/data/media/Documentaries` | `/volume1/Media/Documentaries` | Documentales |
+| `/data/media/Home Videos` | `/volume1/Media/Home Videos` | Home videos |
+| `/app/data` | `/volume1/docker/telegram-downloader/data` | Sesión, historial, cola, progreso, logs |
 | `/app/config.env` | `/volume1/docker/telegram-downloader/config.env` | Credenciales (solo lectura) |
 
 Puerto dashboard: host `${DASHBOARD_PORT:-8765}` → contenedor `8765`.
 
-## Por qué overlays (sin duplicar rutas)
-
-Si solo montaras `Downloads` en `/data/videos`, el clasificador al escribir en
-`DOWNLOAD_DIR/Media/Movies` crearía:
+Compose fija:
 
 ```text
-/volume1/Media/Downloads/Media/Movies   ← duplicado / anidado (incorrecto)
+DOWNLOAD_DIR=/data/media/Downloads
 ```
 
-en lugar de la biblioteca real `/volume1/Media/Movies`.
+Jellyfin sigue apuntando a las rutas físicas del NAS
+(`/volume1/Media/Movies`, `/volume1/Media/Series`, …) sin cambios.
 
-Compose monta primero `Downloads` → `/data/videos` y luego **sobremonta**:
+## Por qué un solo mount (anti-EXDEV)
 
-- `/volume1/Media/Movies` → `/data/videos/Media/Movies`
-- `/volume1/Media/Series` → `/data/videos/Media/Series`
+Montajes separados (`Downloads`, `Movies`, `Series` en binds distintos) hacen que
+`Path.replace()` / `os.rename` fallen con `EXDEV` (Invalid cross-device link)
+al mover desde Inbox hacia Movies/Series.
 
-Así `DOWNLOAD_DIR/Media/Movies|Series` (estructura que espera el clasificador)
-apunta a las carpetas finales del NAS **sin** anidar `Media/` bajo `Downloads`.
+Con **un** bind `/volume1/Media` → `/data/media`, Inbox y las bibliotecas son
+hermanos en el mismo filesystem del contenedor; el rename atómico funciona.
 
-Docker puede crear directorios stub vacíos bajo
-`/volume1/Media/Downloads/Media/{Movies,Series}` al arrancar los overlays;
-quedan enmascarados por los bind mounts y no son el destino real de los archivos.
+## Utilidades de path/move en el repo
+
+`telegram_downloader/media_classifier.py` expone solo helpers de rutas y
+`move_without_overwrite` (rename + fallback EXDEV que no borra el origen si
+falla la copia). **No** incluye lógica TMDb/API/caché/umbrales: esa lógica no
+está en ningún remoto/PR de este repositorio.
 
 ## Persistencia en `/app/data`
 
@@ -67,11 +77,10 @@ quedan enmascarados por los bind mounts y no son el destino real de los archivos
 | Cola manual | `/app/data/manual_download_queue.json` |
 | Progreso | `/app/data/downloader.progress` |
 | Log | `/app/data/downloader.log` |
-| Caché TMDb (si existe) | bajo `/app/data/` |
 
 ## Qué no hacer
 
-- No desplegar ni lanzar descargas reales desde esta documentación sola.
+- No usar varios bind mounts para Movies/Series separados del árbol Media.
 - No poner `API_ID` / `API_HASH` / tokens en YAML.
-- No cambiar la lógica Python del clasificador para “arreglar” rutas: los mounts bastan.
-- No montar solo el árbol `Downloads` encima de Movies/Series sin overlays.
+- No desplegar ni lanzar descargas reales solo con esta documentación.
+- No modificar ni borrar archivos del NAS desde el agente de desarrollo.

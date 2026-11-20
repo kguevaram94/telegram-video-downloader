@@ -55,6 +55,8 @@ La primera vez pedirá teléfono y código de verificación. Busca tu grupo en l
 mkdir -p /volume1/Media/Downloads/Inbox \
          /volume1/Media/Movies \
          /volume1/Media/Series \
+         /volume1/Media/Documentaries \
+         "/volume1/Media/Home Videos" \
          /volume1/docker/telegram-downloader/data
 ```
 
@@ -72,23 +74,22 @@ cp telegram_session.session /volume1/docker/telegram-downloader/data/telegram_se
 cp downloaded.json /volume1/docker/telegram-downloader/data/downloaded.json   # si aplica
 ```
 
-Persistencia en `/volume1/docker/telegram-downloader/data`: sesión, `downloaded.json`, cola manual, progreso, logs y caché TMDb (si existe bajo `DATA_DIR`).
+Persistencia en `/volume1/docker/telegram-downloader/data`: sesión, `downloaded.json`, cola manual, progreso y logs.
 
-### 3. Correspondencia de montajes
+### 3. Correspondencia de montajes (un solo bind)
 
 | Contenedor | NAS |
 |------------|-----|
-| `/data/videos` | `/volume1/Media/Downloads` |
-| `/data/videos/Inbox` | `/volume1/Media/Downloads/Inbox` |
-| `/data/videos/Media/Movies` | `/volume1/Media/Movies` |
-| `/data/videos/Media/Series` | `/volume1/Media/Series` |
+| `/data/media` | `/volume1/Media` |
+| `/data/media/Downloads` | `/volume1/Media/Downloads` (`DOWNLOAD_DIR`) |
+| `/data/media/Downloads/Inbox` | `/volume1/Media/Downloads/Inbox` |
+| `/data/media/Movies` | `/volume1/Media/Movies` |
+| `/data/media/Series` | `/volume1/Media/Series` |
 | `/app/data` | `/volume1/docker/telegram-downloader/data` |
 | `/app/config.env` | `/volume1/docker/telegram-downloader/config.env` |
 
-`DOWNLOAD_DIR=/data/videos` dentro del contenedor. El clasificador sigue usando
-`DOWNLOAD_DIR/Media/Movies` y `DOWNLOAD_DIR/Media/Series`; los **overlays** de Compose
-mapean esas rutas a las bibliotecas finales del NAS (evita
-`/volume1/Media/Downloads/Media/Movies` anidado).
+Un único mount evita `EXDEV` al renombrar entre Inbox y Movies/Series.
+Jellyfin sigue usando las rutas físicas `/volume1/Media/Movies` y `/volume1/Media/Series`.
 
 ### 4. Arrancar
 
@@ -133,6 +134,7 @@ Desde el panel web también puedes iniciar/detener/reiniciar el descargador (mod
 - No expongas el puerto 8765 a Internet sin protección (VPN o reverse proxy con auth).
 - Una sola sesión Telethon activa por archivo `.session` (no correr Mac + NAS a la vez con la misma sesión).
 - Docker local de desarrollo (rutas relativas): ver `docker-compose.local.example.yml`.
+- Tests: `python3 -m pytest tests/ -q`
 
 ## Uso manual
 
@@ -168,15 +170,17 @@ Detalles:
 - Caracteres no válidos (`/`, `:`, etc.) se sustituyen por `_`.
 - Si dos capítulos tienen el mismo nombre, al segundo se le añade el ID del mensaje.
 
-En NAS, `DOWNLOAD_DIR` es `/data/videos` (= `/volume1/Media/Downloads`). La estructura
-interna esperada por el clasificador es:
+En NAS, `DOWNLOAD_DIR` es `/data/media/Downloads` (= `/volume1/Media/Downloads`).
+Layout bajo el mount único `/data/media`:
 
 ```
-DOWNLOAD_DIR/
-  Inbox/
-  Media/
-    Movies/    → montado a /volume1/Media/Movies
-    Series/    → montado a /volume1/Media/Series
+/data/media/
+  Downloads/
+    Inbox/          ← aterrizaje de descargas
+  Movies/           ← hermano de Downloads
+  Series/
+  Documentaries/
+  Home Videos/
 ```
 
 ## Progreso y cola
@@ -384,9 +388,11 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.telegram.video-downl
 | `dashboard.log` | Log del panel web |
 | `com.telegram.video-downloader.plist` | Servicio de arranque automático |
 | `com.telegram.downloader-dashboard.plist` | Arranque automático del panel |
-| `Dockerfile` / `docker-compose.yml` | Despliegue 24/7 en UGREEN NAS (rutas absolutas) |
+| `Dockerfile` / `docker-compose.yml` | Despliegue 24/7 en UGREEN NAS (un bind `/volume1/Media`) |
 | `docker-compose.local.example.yml` | Ejemplo Docker local con rutas relativas |
 | `docs/telegram-downloader-nas-mounts.md` | Tabla de montajes y carpetas previas en UGOS |
+| `telegram_downloader/media_classifier.py` | Helpers de path + `move_without_overwrite` (sin TMDb) |
+| `tests/` | Tests de paths, Inbox y EXDEV |
 | `/volume1/docker/telegram-downloader/data` | Sesión, estado, cola, progreso, logs (en el NAS) |
 
 ## Seguridad
@@ -407,6 +413,6 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.telegram.video-downl
 ## Uso local (opcional)
 
 Para desarrollo local sin NAS, puedes usar Python directamente o
-`docker-compose.local.example.yml` (rutas relativas `./data` y `./downloads`).
+`docker-compose.local.example.yml` (rutas relativas `./data` y `./library`).
 Las secciones de LaunchAgent / app macOS más abajo son opcionales y no forman
 parte del despliegue NAS.

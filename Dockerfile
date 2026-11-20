@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NOTIFY=false \
     DASHBOARD_HOST=0.0.0.0 \
     DASHBOARD_PORT=8765 \
-    DOWNLOAD_DIR=/data/videos \
+    DOWNLOAD_DIR=/data/media/Downloads \
     DATA_DIR=/app/data \
     SESSION_NAME=/app/data/telegram_session \
     STATE_FILE=/app/data/downloaded.json \
@@ -29,11 +29,11 @@ COPY static ./static
 COPY docker/entrypoint.sh /entrypoint.sh
 
 RUN chmod +x /entrypoint.sh \
-    && mkdir -p /app/data /data/videos
+    && mkdir -p /app/data /data/media/Downloads/Inbox
 
 EXPOSE 8765
 
-VOLUME ["/app/data", "/data/videos"]
+VOLUME ["/app/data", "/data/media"]
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["all"]

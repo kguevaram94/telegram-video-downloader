@@ -8,6 +8,8 @@ from pathlib import Path
 from telethon.tl.custom.message import Message
 from telethon.tl.types import DocumentAttributeFilename
 
+from telegram_downloader.media_classifier import inbox_dir, library_search_roots
+
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts"})
 
 _MIME_TO_EXT = {
@@ -86,21 +88,41 @@ def get_original_filename(message: Message) -> str:
 
 
 def month_dir_for_message(message: Message, download_dir: Path) -> Path:
-    return download_dir / message.date.strftime("%Y-%m")
+    """Landing path under Downloads/Inbox (YYYY-MM), same mount as Movies/Series."""
+    return inbox_dir(download_dir) / message.date.strftime("%Y-%m")
 
 
 def base_target_path(message: Message, download_dir: Path) -> Path:
     return month_dir_for_message(message, download_dir) / get_original_filename(message)
 
 
-def find_message_file(message: Message, download_dir: Path) -> Path | None:
-    base = base_target_path(message, download_dir)
-    if base.exists():
-        return base
+def _candidate_paths(message: Message, root: Path) -> list[Path]:
+    filename = get_original_filename(message)
+    stem_with_id = f"{Path(filename).stem}_{message.id}{Path(filename).suffix}"
+    month = message.date.strftime("%Y-%m")
+    return [
+        root / month / filename,
+        root / month / stem_with_id,
+        root / filename,
+        root / stem_with_id,
+    ]
 
-    alternate = base.parent / f"{base.stem}_{message.id}{base.suffix}"
-    if alternate.exists():
-        return alternate
+
+def find_message_file(message: Message, download_dir: Path) -> Path | None:
+    """Find a downloaded file in Inbox or sibling library folders (Movies/Series/…)."""
+    search_roots = list(library_search_roots(download_dir))
+    # Legacy pre-Inbox layout: DOWNLOAD_DIR/YYYY-MM/
+    search_roots.append(download_dir)
+
+    seen: set[Path] = set()
+    for root in search_roots:
+        for candidate in _candidate_paths(message, root):
+            key = candidate
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.exists():
+                return candidate
 
     return None
 

@@ -4,6 +4,7 @@
 #   docker compose -f docker-compose.local.example.yml up -d --build
 #
 # No secrets in this file — use a local config.env next to the compose file.
+# Single library mount mirrors NAS (avoid multi-mount EXDEV on Path.replace).
 
 services:
   telegram-downloader:
@@ -19,7 +20,7 @@ services:
       NOTIFY: "false"
       DASHBOARD_HOST: "0.0.0.0"
       DASHBOARD_PORT: "8765"
-      DOWNLOAD_DIR: /data/videos
+      DOWNLOAD_DIR: /data/media/Downloads
       DATA_DIR: /app/data
       SESSION_NAME: /app/data/telegram_session
       STATE_FILE: /app/data/downloaded.json
@@ -29,10 +30,8 @@ services:
     volumes:
       - ./config.env:/app/config.env:ro
       - ./data:/app/data
-      - ./downloads:/data/videos
-      # Optional local overlays mirroring NAS layout (create dirs first):
-      # - ./library/Movies:/data/videos/Media/Movies
-      # - ./library/Series:/data/videos/Media/Series
+      # Create ./library/{Downloads/Inbox,Movies,Series,...} beforehand.
+      - ./library:/data/media
     healthcheck:
       test:
         [

@@ -1,11 +1,15 @@
 # UGREEN NAS DXP2800 / UGOS Pro — exclusive Docker Compose
 # No secrets here: credentials live in config.env (env_file + bind mount).
 #
-# Mount design (avoids nested Downloads/Media/Movies duplicates):
-#   /volume1/Media/Downloads          → /data/videos
-#   /volume1/Media/Movies             → /data/videos/Media/Movies   (overlay)
-#   /volume1/Media/Series             → /data/videos/Media/Series   (overlay)
-# So classifier paths DOWNLOAD_DIR/Media/Movies|Series land on the real libraries.
+# ONE bind mount for the whole media library so Path.replace() never hits EXDEV:
+#   /volume1/Media → /data/media
+#
+# Layout (siblings under the same mount):
+#   /data/media/Downloads/Inbox
+#   /data/media/Movies
+#   /data/media/Series
+#   /data/media/Documentaries
+#   /data/media/Home Videos
 
 services:
   telegram-downloader:
@@ -21,7 +25,7 @@ services:
       NOTIFY: "false"
       DASHBOARD_HOST: "0.0.0.0"
       DASHBOARD_PORT: "8765"
-      DOWNLOAD_DIR: /data/videos
+      DOWNLOAD_DIR: /data/media/Downloads
       DATA_DIR: /app/data
       SESSION_NAME: /app/data/telegram_session
       STATE_FILE: /app/data/downloaded.json
@@ -32,13 +36,10 @@ services:
       # Secrets / config (read-only). Do not put API keys in this YAML.
       - /volume1/docker/telegram-downloader/config.env:/app/config.env:ro
       # Persistent app state: Telethon session, download history, manual queue,
-      # progress, logs, TMDb cache (if used under DATA_DIR).
+      # progress, logs (and TMDb cache if/when a classifier lands under DATA_DIR).
       - /volume1/docker/telegram-downloader/data:/app/data
-      # Downloads root (Inbox → /data/videos/Inbox).
-      - /volume1/Media/Downloads:/data/videos
-      # Classifier destinations: overlay onto final library folders (not under Downloads).
-      - /volume1/Media/Movies:/data/videos/Media/Movies
-      - /volume1/Media/Series:/data/videos/Media/Series
+      # Entire media library — single mount keeps renames on one filesystem.
+      - /volume1/Media:/data/media
     healthcheck:
       test:
         [
