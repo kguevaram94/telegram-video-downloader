@@ -12,6 +12,7 @@ from telegram_downloader.config import AppConfig, load_config
 from telegram_downloader.download_manager import DownloadManager
 from telegram_downloader.state import load_downloaded_ids
 from telegram_downloader.video import is_video_message
+from telegram_downloader.filenames import get_document_filename
 
 
 def _parse_args() -> argparse.Namespace:
@@ -59,8 +60,25 @@ async def _run_monitor(
     @client.on(events.NewMessage(chats=chat_id))
     async def on_new_message(event: events.NewMessage.Event) -> None:
         message = event.message
+
+        print(
+            f"[TELEGRAM] Mensaje recibido: id={message.id}",
+            flush=True,
+        )
+
         if not is_video_message(message):
+            print(
+                f"[TELEGRAM] Mensaje ignorado: id={message.id} | no es vídeo",
+                flush=True,
+            )
             return
+
+        print(
+            f"[TELEGRAM] Vídeo detectado: id={message.id} "
+            f"| nombre={get_document_filename(message)}",
+            flush=True,
+        )
+
         await manager.enqueue(client, message)
 
     print("Esperando nuevos videos... (Ctrl+C para salir)")
