@@ -189,3 +189,77 @@ def test_successful_classification_moves_out_of_downloads(tmp_path: Path) -> Non
         assert message.id in manager.downloaded_ids
 
     asyncio.run(scenario())
+
+
+def test_successful_classification_is_logged(tmp_path: Path) -> None:
+    from contextlib import redirect_stdout
+    from io import StringIO
+
+    config = _config(tmp_path)
+    manager = DownloadManager(config, set())
+    dest = config.download_dir / "Inbox" / "Wayward Pines S02E09.mkv"
+    destination = config.download_dir.parent / "Series" / "Wayward Pines" / "Season 02" / dest.name
+
+    result = ClassificationResult(
+        "classified",
+        "ok",
+        match=TmdbMatch(
+            media_type="tv",
+            tmdb_id=53425,
+            title="Wayward Pines",
+            year=None,
+            score=0.95,
+        ),
+        parsed=SimpleNamespace(
+            episode=SimpleNamespace(season=2, episode=9)
+        ),
+        destination=destination,
+    )
+
+    output = StringIO()
+    with redirect_stdout(output):
+        manager._path_after_classification(dest, result)
+
+    assert "[TMDB] Clasificado: Wayward Pines (S02E09)" in output.getvalue()
+
+
+def test_unclassified_result_is_logged(tmp_path: Path) -> None:
+    from contextlib import redirect_stdout
+    from io import StringIO
+
+    config = _config(tmp_path)
+    manager = DownloadManager(config, set())
+    dest = config.download_dir / "Inbox" / "unknown.mkv"
+
+    result = ClassificationResult("inbox", "sin_resultados")
+
+    output = StringIO()
+    with redirect_stdout(output):
+        returned = manager._path_after_classification(dest, result)
+
+    assert returned == dest
+    assert "[TMDB] Sin clasificar: unknown.mkv | motivo=sin_resultados" in output.getvalue()
+
+
+def test_classification_exception_is_logged(tmp_path: Path) -> None:
+    from contextlib import redirect_stdout
+    from io import StringIO
+
+    config = _config(tmp_path)
+    manager = DownloadManager(config, set())
+    dest = config.download_dir / "Inbox" / "video.mkv"
+
+    classifier = MagicMock()
+    classifier.classify_and_relocate = AsyncMock(
+        side_effect=RuntimeError("TMDB unavailable")
+    )
+    manager._classifier = classifier
+
+    output = StringIO()
+    with redirect_stdout(output):
+        returned = asyncio.run(
+            manager._classify_downloaded_file(dest, _message())
+        )
+
+    assert returned == dest
+    assert "[TMDB] Clasificación omitida: video.mkv | error=RuntimeError" in output.getvalue()

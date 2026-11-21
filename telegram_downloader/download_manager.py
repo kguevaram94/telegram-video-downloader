@@ -241,6 +241,11 @@ class DownloadManager:
                 original_filename=get_document_filename(message),
             )
         except Exception as exc:
+            print(
+                f"[TMDB] Clasificación omitida: {dest.name} "
+                f"| error={exc.__class__.__name__}",
+                flush=True,
+            )
             self._progress.status(
                 f"Clasificación omitida ({exc.__class__.__name__}): se mantiene Inbox"
             )
@@ -255,9 +260,23 @@ class DownloadManager:
     ) -> Path:
         if result.status == "classified" and result.destination is not None:
             label = result.match.title if result.match else result.destination.name
+            episode = result.parsed.episode if result.parsed else None
+            episode_label = (
+                f" (S{episode.season:02d}E{episode.episode:02d})"
+                if episode else ""
+            )
+            print(
+                f"[TMDB] Clasificado: {label}{episode_label} "
+                f"| archivo={dest.name}",
+                flush=True,
+            )
             self._progress.status(f"Clasificado: {label}")
             return result.destination
 
+        print(
+            f"[TMDB] Sin clasificar: {dest.name} | motivo={result.reason}",
+            flush=True,
+        )
         self._progress.status(f"Sin clasificar ({result.reason}): Inbox")
         return dest
 

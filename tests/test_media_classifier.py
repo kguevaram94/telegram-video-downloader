@@ -71,6 +71,12 @@ class NormalizeTitleTests(unittest.TestCase):
             normalize_title("Breaking.Bad.S01E02.720p.WEB-DL.mkv"),
         )
 
+    def test_removes_standalone_video_format_tokens(self) -> None:
+        self.assertEqual(
+            normalize_title("Wayward Pines S02E09 480p mkv"),
+            "wayward pines",
+        )
+
 
 class EpisodeParsingTests(unittest.TestCase):
     def test_s01e02_pattern(self) -> None:

@@ -91,6 +91,14 @@ _NOISE_TOKENS = frozenset(
         "dsnp",
         "hulu",
         "internal",
+        "dl",
+        "mkv",
+        "mp4",
+        "mov",
+        "webm",
+        "avi",
+        "m4v",
+        "ts",
     }
 )
 
