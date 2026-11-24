@@ -107,6 +107,24 @@ _SEPARATORS = re.compile(r"[._+\-]+")
 _WHITESPACE = re.compile(r"\s+")
 _NON_ALNUM = re.compile(r"[^a-z0-9\s]")
 _INVALID_CHARS = re.compile(r'[<>:"/\\|?*]')
+_AT_HANDLE = re.compile(r"@\w+")
+_TRAILING_RELEASE_GROUP = re.compile(
+    r"(?:(?<=\s)|(?<=\.))-?(?P<group>[A-Za-z][A-Za-z0-9_]{1,30})$"
+)
+
+
+def _log_tmdb(message: str) -> None:
+    """Diagnostic log for classification; never include secrets."""
+    print(f"[TMDB] {message}", flush=True)
+
+
+def _short_text(value: str | None, limit: int = 80) -> str:
+    if not value:
+        return "-"
+    cleaned = _WHITESPACE.sub(" ", value.strip())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1] + "…"
 
 
 @dataclass(frozen=True)
@@ -121,6 +139,13 @@ class ParsedMediaName:
     title_query: str
     year: int | None
     episode: EpisodeInfo | None
+    content_type: str | None = None
+    release_group: str | None = None
+    screen_size: str | None = None
+    video_codec: str | None = None
+    source: str | None = None
+    parser: str = "legacy"
+    search_queries: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -447,6 +472,172 @@ def normalize_title(text: str) -> str:
     return _WHITESPACE.sub(" ", cleaned).strip()
 
 
+def strip_distribution_info(text: str) -> str:
+    """Remove @handles and trailing release-group tokens without touching title words."""
+    without_ext = strip_extension(text)
+    without_handles = _AT_HANDLE.sub(" ", without_ext)
+    spaced = _SEPARATORS.sub(" ", without_handles)
+    spaced = _WHITESPACE.sub(" ", spaced).strip()
+    trimmed = _TRAILING_RELEASE_GROUP.sub("", spaced).strip(" .-_")
+    return normalize_title(trimmed)
+
+
+def _as_single_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, list) and len(value) == 1:
+        return _as_single_int(value[0])
+    return None
+
+
+def _as_single_str(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, list):
+        parts = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        if parts:
+            return " ".join(parts)
+    return None
+
+
+def _clean_guessit_title(title: str) -> str:
+    """Normalize GuessIt titles that still contain filename separators."""
+    spaced = _SEPARATORS.sub(" ", title)
+    return _WHITESPACE.sub(" ", spaced).strip()
+
+
+def _guessit_to_dict(name: str) -> dict[str, Any] | None:
+    try:
+        from guessit import guessit
+    except ImportError:
+        return None
+    try:
+        guessed = guessit(name)
+    except Exception:
+        return None
+    if not guessed:
+        return None
+    return dict(guessed)
+
+
+def _content_type_from_guessit(guessed: dict[str, Any]) -> str | None:
+    raw_type = guessed.get("type")
+    if raw_type == "episode":
+        return "episode"
+    if raw_type == "movie":
+        return "movie"
+    return None
+
+
+def _episode_from_guessit(guessed: dict[str, Any]) -> EpisodeInfo | None:
+    season = _as_single_int(guessed.get("season"))
+    episode = _as_single_int(guessed.get("episode"))
+    if season is None or episode is None:
+        return None
+    return EpisodeInfo(season=season, episode=episode)
+
+
+def parse_with_guessit(name: str) -> ParsedMediaName | None:
+    """Parse a single filename/caption with GuessIt. Returns None if unusable."""
+    cleaned = name.strip()
+    if not cleaned:
+        return None
+
+    guessed = _guessit_to_dict(cleaned)
+    if guessed is None:
+        return None
+
+    title = _as_single_str(guessed.get("title"))
+    if title is None:
+        return None
+    title = _clean_guessit_title(title)
+    if len(title) < 2:
+        return None
+
+    year = _as_single_int(guessed.get("year"))
+    episode = _episode_from_guessit(guessed)
+    content_type = _content_type_from_guessit(guessed)
+    release_group = _as_single_str(guessed.get("release_group"))
+    screen_size = _as_single_str(guessed.get("screen_size"))
+    video_codec = _as_single_str(guessed.get("video_codec"))
+    source = _as_single_str(guessed.get("source"))
+
+    return ParsedMediaName(
+        raw=cleaned,
+        title_query=title,
+        year=year,
+        episode=episode,
+        content_type=content_type,
+        release_group=release_group,
+        screen_size=screen_size,
+        video_codec=video_codec,
+        source=source,
+        parser="guessit",
+        search_queries=(title,),
+    )
+
+
+def _best_legacy_title(raw_parts: list[str]) -> str:
+    title_query = ""
+    for part in raw_parts:
+        candidate = normalize_title(part)
+        if len(candidate) > len(title_query):
+            title_query = candidate
+    return title_query
+
+
+def _best_distribution_free_title(raw_parts: list[str]) -> str:
+    title_query = ""
+    for part in raw_parts:
+        candidate = strip_distribution_info(part)
+        if len(candidate) > len(title_query):
+            title_query = candidate
+    return title_query
+
+
+def _dedupe_queries(*candidates: str | None) -> tuple[str, ...]:
+    queries: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        cleaned = _WHITESPACE.sub(" ", candidate.strip())
+        if len(cleaned) < 2:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        queries.append(cleaned)
+    return tuple(queries)
+
+
+def _select_guessit_candidate(
+    raw_parts: list[str],
+) -> ParsedMediaName | None:
+    """Prefer GuessIt results that include episode markers or the richest title."""
+    best: ParsedMediaName | None = None
+    for part in raw_parts:
+        candidate = parse_with_guessit(part)
+        if candidate is None:
+            continue
+        if best is None:
+            best = candidate
+            continue
+        best_has_ep = best.episode is not None
+        cand_has_ep = candidate.episode is not None
+        if cand_has_ep and not best_has_ep:
+            best = candidate
+            continue
+        if cand_has_ep == best_has_ep and len(candidate.title_query) > len(
+            best.title_query
+        ):
+            best = candidate
+    return best
+
+
 def parse_media_name(*sources: str | None) -> ParsedMediaName | None:
     raw_parts = [part.strip() for part in sources if part and part.strip()]
     if not raw_parts:
@@ -454,23 +645,45 @@ def parse_media_name(*sources: str | None) -> ParsedMediaName | None:
 
     raw = " | ".join(raw_parts)
     joined = " ".join(raw_parts)
-    episode = extract_episode_info(joined)
-    year = extract_year(joined)
+    legacy_episode = extract_episode_info(joined)
+    legacy_year = extract_year(joined)
+    legacy_title = _best_legacy_title(raw_parts)
+    alt_title = _best_distribution_free_title(raw_parts)
 
-    title_query = ""
-    for part in raw_parts:
-        candidate = normalize_title(part)
-        if len(candidate) > len(title_query):
-            title_query = candidate
+    guessit_parsed = _select_guessit_candidate(raw_parts)
+    if guessit_parsed is not None:
+        episode = guessit_parsed.episode or legacy_episode
+        year = guessit_parsed.year or legacy_year
+        search_queries = _dedupe_queries(
+            guessit_parsed.title_query,
+            legacy_title,
+            alt_title,
+        )
+        return ParsedMediaName(
+            raw=raw,
+            title_query=guessit_parsed.title_query,
+            year=year,
+            episode=episode,
+            content_type=guessit_parsed.content_type,
+            release_group=guessit_parsed.release_group,
+            screen_size=guessit_parsed.screen_size,
+            video_codec=guessit_parsed.video_codec,
+            source=guessit_parsed.source,
+            parser="guessit",
+            search_queries=search_queries,
+        )
 
-    if len(title_query) < 2:
+    if len(legacy_title) < 2:
         return None
 
+    search_queries = _dedupe_queries(legacy_title, alt_title)
     return ParsedMediaName(
         raw=raw,
-        title_query=title_query,
-        year=year,
-        episode=episode,
+        title_query=legacy_title,
+        year=legacy_year,
+        episode=legacy_episode,
+        parser="legacy",
+        search_queries=search_queries,
     )
 
 
@@ -482,6 +695,17 @@ def title_similarity(left: str, right: str) -> float:
     if a == b:
         return 1.0
     return SequenceMatcher(None, a, b).ratio()
+
+
+def expected_media_type(parsed: ParsedMediaName) -> str | None:
+    """Return 'tv', 'movie', or None when the type is still undecided."""
+    if parsed.episode is not None or parsed.content_type == "episode":
+        return "tv"
+    if parsed.content_type == "movie":
+        return "movie"
+    if parsed.year is not None and parsed.episode is None:
+        return "movie"
+    return None
 
 
 def _result_title(item: dict[str, Any]) -> str | None:
@@ -515,12 +739,15 @@ def _apply_year_score(
 def _apply_type_score(
     score: float,
     media_type: str,
-    episode: EpisodeInfo | None,
+    parsed: ParsedMediaName,
 ) -> float:
+    preferred = expected_media_type(parsed)
     adjusted = score
-    if episode is not None and media_type == "movie":
-        adjusted = max(0.0, adjusted - 0.2)
-    if episode is None and media_type == "tv":
+    if preferred == "tv" and media_type == "movie":
+        adjusted = max(0.0, adjusted - 0.35)
+    elif preferred == "movie" and media_type == "tv":
+        adjusted = max(0.0, adjusted - 0.25)
+    elif preferred is None and parsed.episode is None and media_type == "tv":
         adjusted = max(0.0, adjusted - 0.05)
     return adjusted
 
@@ -541,7 +768,7 @@ def score_tmdb_result(
     result_year = _result_year(item)
     score = title_similarity(parsed.title_query, title)
     score = _apply_year_score(score, parsed.year, result_year)
-    score = _apply_type_score(score, media_type, parsed.episode)
+    score = _apply_type_score(score, media_type, parsed)
     return TmdbMatch(
         media_type=media_type,
         tmdb_id=tmdb_id,
@@ -564,6 +791,35 @@ def _score_all_results(
     return scored
 
 
+def validate_match(
+    match: TmdbMatch | None,
+    parsed: ParsedMediaName,
+    reason: str,
+) -> tuple[TmdbMatch | None, str]:
+    if match is None:
+        return None, reason
+
+    preferred = expected_media_type(parsed)
+    if preferred == "tv":
+        if match.media_type != "tv":
+            return None, "tipo_incorrecto"
+        if parsed.episode is None:
+            return None, "serie_sin_episodio"
+    elif preferred == "movie":
+        if match.media_type != "movie":
+            return None, "tipo_incorrecto"
+        if (
+            parsed.year is not None
+            and match.year is not None
+            and parsed.year != match.year
+        ):
+            return None, "anio_no_coincide"
+
+    if match.media_type == "tv" and parsed.episode is None:
+        return None, "serie_sin_episodio"
+    return match, "ok"
+
+
 def pick_best_match(
     results: list[dict[str, Any]],
     parsed: ParsedMediaName,
@@ -575,6 +831,13 @@ def pick_best_match(
     if not scored:
         return None, "sin_resultados"
 
+    preferred = expected_media_type(parsed)
+    if preferred is not None:
+        typed = [item for item in scored if item.media_type == preferred]
+        if not typed:
+            return None, "tipo_incorrecto"
+        scored = typed
+
     best = scored[0]
     if best.score < confidence_threshold:
         return None, "confianza_insuficiente"
@@ -582,9 +845,8 @@ def pick_best_match(
     contenders = [item for item in scored if item.score >= confidence_threshold]
     if _is_ambiguous(contenders, parsed, ambiguity_delta):
         return None, "ambiguo"
-    if best.media_type == "tv" and parsed.episode is None:
-        return None, "serie_sin_episodio"
-    return best, "ok"
+
+    return validate_match(best, parsed, "ok")
 
 
 def _is_ambiguous(
@@ -657,26 +919,88 @@ class MediaClassifier:
         if not source_path.exists():
             return ClassificationResult("skipped", "archivo_inexistente")
 
+        _log_tmdb(
+            f"Origen: file={source_path.name!r} "
+            f"original={original_filename!r} "
+            f"caption={_short_text(message_text)!r}"
+        )
         parsed = parse_media_name(message_text, original_filename, source_path.name)
         if parsed is None:
+            _log_tmdb(f"Rechazo: sin_informacion | destino=Inbox | file={source_path.name!r}")
             return ClassificationResult("inbox", "sin_informacion")
 
+        self._log_parsed(parsed)
         match_result = await self._resolve_match(parsed)
         if match_result.status != "classified" or match_result.match is None:
+            _log_tmdb(
+                f"Rechazo: {match_result.reason} | destino=Inbox | "
+                f"file={source_path.name!r}"
+            )
             return match_result
 
-        return self._relocate_match(source_path, parsed, match_result.match)
+        relocated = self._relocate_match(source_path, parsed, match_result.match)
+        if relocated.status == "classified" and relocated.destination is not None:
+            _log_tmdb(
+                f"Destino final: {relocated.destination} | "
+                f"match={match_result.match.title!r} "
+                f"score={match_result.match.score:.3f}"
+            )
+        else:
+            _log_tmdb(
+                f"Rechazo: {relocated.reason} | destino=Inbox | "
+                f"file={source_path.name!r}"
+            )
+        return relocated
+
+    def _log_parsed(self, parsed: ParsedMediaName) -> None:
+        episode_label = "-"
+        if parsed.episode is not None:
+            episode_label = (
+                f"S{parsed.episode.season:02d}E{parsed.episode.episode:02d}"
+            )
+        _log_tmdb(
+            f"Parse ({parsed.parser}): title={parsed.title_query!r} "
+            f"year={parsed.year} episode={episode_label} "
+            f"type={parsed.content_type} group={parsed.release_group!r} "
+            f"res={parsed.screen_size!r} codec={parsed.video_codec!r} "
+            f"source={parsed.source!r}"
+        )
+        _log_tmdb(
+            f"Título de búsqueda: {parsed.title_query!r} | "
+            f"queries={list(parsed.search_queries)!r}"
+        )
 
     async def _resolve_match(self, parsed: ParsedMediaName) -> ClassificationResult:
-        try:
-            results = await self._client.search_multi(parsed.title_query)
-        except Exception as exc:
-            return ClassificationResult(
-                "inbox",
-                f"error_tmdb:{exc.__class__.__name__}",
-                parsed=parsed,
-            )
+        queries = parsed.search_queries or (parsed.title_query,)
+        last_reason = "sin_resultados"
 
+        for query in queries:
+            match, reason = await self._search_and_pick(parsed, query)
+            last_reason = reason
+            if match is not None:
+                return ClassificationResult(
+                    "classified",
+                    "ok",
+                    match=match,
+                    parsed=parsed,
+                )
+
+        return ClassificationResult("inbox", last_reason, parsed=parsed)
+
+    async def _search_and_pick(
+        self,
+        parsed: ParsedMediaName,
+        query: str,
+    ) -> tuple[TmdbMatch | None, str]:
+        _log_tmdb(f"Consulta TMDb: query={query!r}")
+        try:
+            results = await self._client.search_multi(query)
+        except Exception as exc:
+            reason = f"error_tmdb:{exc.__class__.__name__}"
+            _log_tmdb(f"Consulta TMDb fallida: {reason}")
+            return None, reason
+
+        _log_tmdb(f"Resultados TMDb: query={query!r} count={len(results)}")
         match, reason = pick_best_match(
             results,
             parsed,
@@ -684,8 +1008,14 @@ class MediaClassifier:
             ambiguity_delta=self._ambiguity_delta,
         )
         if match is None:
-            return ClassificationResult("inbox", reason, parsed=parsed)
-        return ClassificationResult("classified", "ok", match=match, parsed=parsed)
+            _log_tmdb(f"Sin coincidencia fiable: query={query!r} motivo={reason}")
+            return None, reason
+
+        _log_tmdb(
+            f"Mejor coincidencia: title={match.title!r} type={match.media_type} "
+            f"year={match.year} score={match.score:.3f} id={match.tmdb_id}"
+        )
+        return match, reason
 
     def _relocate_match(
         self,
