@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from telegram_downloader.classification_lock import (
+    ClassificationPathLock,
+    get_classification_lock,
+)
 from telegram_downloader.config import AppConfig
 from telegram_downloader.filenames import VIDEO_EXTENSIONS
 from telegram_downloader.formatting import format_size
@@ -86,28 +89,22 @@ class ReclassifyResponse:
 
 
 class InboxReclassifyService:
-    """Servicio con bloqueo por archivo para evitar reclasificaciones concurrentes."""
+    """Fachada de bloqueo por archivo sobre ClassificationPathLock."""
 
-    def __init__(self) -> None:
-        # threading.Lock evita depender de un event loop en el __init__ (Py3.9).
-        self._lock = threading.Lock()
-        self._processing: set[str] = set()
+    def __init__(self, path_lock: ClassificationPathLock | None = None) -> None:
+        # Instancia propia por defecto (tests); producción usa el lock compartido.
+        self._path_lock = (
+            path_lock if path_lock is not None else ClassificationPathLock()
+        )
 
     def try_acquire(self, resolved_path: Path) -> bool:
-        key = str(resolved_path)
-        with self._lock:
-            if key in self._processing:
-                return False
-            self._processing.add(key)
-            return True
+        return self._path_lock.try_acquire(resolved_path)
 
     def release(self, resolved_path: Path) -> None:
-        key = str(resolved_path)
-        with self._lock:
-            self._processing.discard(key)
+        self._path_lock.release(resolved_path)
 
 
-_reclassify_service = InboxReclassifyService()
+_reclassify_service = InboxReclassifyService(path_lock=get_classification_lock())
 
 
 def get_reclassify_service() -> InboxReclassifyService:

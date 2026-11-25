@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from telethon import TelegramClient
 from telethon.tl.custom.message import Message
 
+from telegram_downloader.classification_lock import (
+    ClassificationPathLock,
+    get_classification_lock,
+)
 from telegram_downloader.config import AppConfig
 from telegram_downloader.filenames import (
     find_message_file,
@@ -27,9 +33,30 @@ from telegram_downloader.progress import ProgressFileStore, ProgressReporter
 from telegram_downloader.state import save_downloaded_ids
 from telegram_downloader.video import is_video_message
 
+AutoClassifyStatus = Literal["disabled", "deferred", "executed"]
+
+
+@dataclass(frozen=True)
+class AutoClassifyOutcome:
+    """Resultado de la clasificación automática post-descarga.
+
+    - ``disabled``: clasificador ausente; no se intentó clasificar.
+    - ``deferred``: lock ocupado; el archivo queda en Inbox sin marcarse.
+    - ``executed``: se ejecutó la clasificación (éxito, ambiguo, vacío o error).
+    """
+
+    path: Path
+    status: AutoClassifyStatus
+
 
 class DownloadManager:
-    def __init__(self, config: AppConfig, downloaded_ids: set[int]) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        downloaded_ids: set[int],
+        *,
+        classification_lock: ClassificationPathLock | None = None,
+    ) -> None:
         self._config = config
         self.downloaded_ids = downloaded_ids
         self._queue: asyncio.Queue[tuple[TelegramClient, Message, bool]] = (
@@ -40,6 +67,11 @@ class DownloadManager:
         self._progress_store = ProgressFileStore(config.progress_file)
         self._progress = ProgressReporter(self._progress_store)
         self._classifier = self._build_classifier(config)
+        self._classification_lock = (
+            classification_lock
+            if classification_lock is not None
+            else get_classification_lock()
+        )
 
     def queue_waiting(self) -> int:
         return self._queue.qsize()
@@ -179,9 +211,11 @@ class DownloadManager:
 
         dest = resolve_target_path(message, self._config.download_dir)
         await self._download_to_inbox(client, message, dest)
-        final_path = await self._classify_downloaded_file(dest, message)
+        outcome = await self._classify_downloaded_file(dest, message)
+        if outcome.status == "deferred":
+            return
         self._mark_downloaded(message.id)
-        await self._notify_completed(final_path)
+        await self._notify_completed(outcome.path)
 
     async def _download_to_inbox(
         self,
@@ -230,9 +264,21 @@ class DownloadManager:
         self,
         dest: Path,
         message: Message,
-    ) -> Path:
+    ) -> AutoClassifyOutcome:
         if self._classifier is None:
-            return dest
+            return AutoClassifyOutcome(path=dest, status="disabled")
+
+        acquired = self._classification_lock.try_acquire(dest)
+        if not acquired:
+            print(
+                f"[TMDB] Clasificación diferida: {dest.name} "
+                f"| motivo=ya_en_proceso",
+                flush=True,
+            )
+            self._progress.status(
+                "Clasificación diferida (ya en proceso): se mantiene Inbox"
+            )
+            return AutoClassifyOutcome(path=dest, status="deferred")
 
         try:
             result = await self._classifier.classify_and_relocate(
@@ -249,9 +295,14 @@ class DownloadManager:
             self._progress.status(
                 f"Clasificación omitida ({exc.__class__.__name__}): se mantiene Inbox"
             )
-            return dest
+            return AutoClassifyOutcome(path=dest, status="executed")
+        finally:
+            self._classification_lock.release(dest)
 
-        return self._path_after_classification(dest, result)
+        return AutoClassifyOutcome(
+            path=self._path_after_classification(dest, result),
+            status="executed",
+        )
 
     def _path_after_classification(
         self,

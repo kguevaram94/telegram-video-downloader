@@ -10,8 +10,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from telegram_downloader.config import AppConfig
-from telegram_downloader.download_manager import DownloadManager
+from telegram_downloader.download_manager import AutoClassifyOutcome, DownloadManager
 from telegram_downloader.media_classifier import ClassificationResult, TmdbMatch
+from telegram_downloader.state import load_downloaded_ids
 
 
 def _config(tmp_path: Path, *, enabled: bool = True) -> AppConfig:
@@ -73,12 +74,12 @@ def test_classify_runs_only_after_part_rename(tmp_path: Path) -> None:
 
         client.download_media = AsyncMock(side_effect=fake_download_media)
 
-        async def fake_classify(dest: Path, _message: Any) -> Path:
+        async def fake_classify(dest: Path, _message: Any) -> AutoClassifyOutcome:
             order.append("classify")
             assert dest.exists()
             assert dest.suffix == ".mp4"
             assert not dest.with_suffix(dest.suffix + ".part").exists()
-            return dest
+            return AutoClassifyOutcome(path=dest, status="executed")
 
         with (
             patch.object(manager, "_classify_downloaded_file", side_effect=fake_classify),
@@ -271,5 +272,170 @@ def test_classification_exception_is_logged(tmp_path: Path) -> None:
         return returned, output.getvalue()
 
     returned, logged = asyncio.run(scenario())
-    assert returned.name == "video.mkv"
+    assert returned.path.name == "video.mkv"
+    assert returned.status == "executed"
     assert "[TMDB] Clasificación omitida: video.mkv | error=RuntimeError" in logged
+
+
+def test_ambiguous_classification_marks_downloaded(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        config = _config(tmp_path)
+        manager = DownloadManager(config, set())
+        message = _message()
+        client = MagicMock()
+
+        async def fake_download_media(
+            _message: Any,
+            *,
+            file: str,
+            progress_callback: Any = None,
+        ) -> None:
+            Path(file).write_bytes(b"video")
+
+        client.download_media = AsyncMock(side_effect=fake_download_media)
+
+        classifier = MagicMock()
+        classifier.classify_and_relocate = AsyncMock(
+            return_value=ClassificationResult("inbox", "ambiguo")
+        )
+        manager._classifier = classifier
+
+        with (
+            patch(
+                "telegram_downloader.download_manager.notify_async",
+                new=AsyncMock(),
+            ),
+        ):
+            await manager._download_one(client, message)
+
+        inbox_file = config.download_dir / "Inbox" / "2026-11" / "Inception 2010.mp4"
+        assert inbox_file.exists()
+        assert message.id in manager.downloaded_ids
+        assert message.id in load_downloaded_ids(config.state_file)
+        classifier.classify_and_relocate.assert_awaited_once()
+
+    asyncio.run(scenario())
+
+
+def test_classification_disabled_marks_downloaded(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        config = _config(tmp_path, enabled=False)
+        manager = DownloadManager(config, set())
+        message = _message()
+        client = MagicMock()
+
+        async def fake_download_media(
+            _message: Any,
+            *,
+            file: str,
+            progress_callback: Any = None,
+        ) -> None:
+            Path(file).write_bytes(b"video")
+
+        client.download_media = AsyncMock(side_effect=fake_download_media)
+        assert manager._classifier is None
+
+        with (
+            patch(
+                "telegram_downloader.download_manager.notify_async",
+                new=AsyncMock(),
+            ),
+        ):
+            await manager._download_one(client, message)
+
+        inbox_file = config.download_dir / "Inbox" / "2026-11" / "Inception 2010.mp4"
+        assert inbox_file.exists()
+        assert message.id in manager.downloaded_ids
+        assert message.id in load_downloaded_ids(config.state_file)
+
+    asyncio.run(scenario())
+
+
+def test_deferred_classification_does_not_mark_downloaded(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        from telegram_downloader.classification_lock import ClassificationPathLock
+
+        config = _config(tmp_path)
+        shared = ClassificationPathLock()
+        manager = DownloadManager(config, set(), classification_lock=shared)
+        message = _message()
+        client = MagicMock()
+        payload = b"precious-deferred-bytes"
+
+        async def fake_download_media(
+            _message: Any,
+            *,
+            file: str,
+            progress_callback: Any = None,
+        ) -> None:
+            Path(file).write_bytes(payload)
+
+        client.download_media = AsyncMock(side_effect=fake_download_media)
+
+        classifier = MagicMock()
+        classifier.classify_and_relocate = AsyncMock(
+            return_value=ClassificationResult("classified", "ok")
+        )
+        manager._classifier = classifier
+
+        inbox_file = config.download_dir / "Inbox" / "2026-11" / "Inception 2010.mp4"
+        assert shared.try_acquire(inbox_file)
+
+        with (
+            patch(
+                "telegram_downloader.download_manager.notify_async",
+                new=AsyncMock(),
+            ),
+        ):
+            await manager._download_one(client, message)
+
+        shared.release(inbox_file)
+
+        assert inbox_file.exists()
+        assert inbox_file.read_bytes() == payload
+        assert message.id not in manager.downloaded_ids
+        assert not config.state_file.exists()
+        classifier.classify_and_relocate.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
+def test_tmdb_error_marks_downloaded_and_keeps_inbox_bytes(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        config = _config(tmp_path)
+        manager = DownloadManager(config, set())
+        message = _message()
+        client = MagicMock()
+        payload = b"inbox-kept-on-tmdb-error"
+
+        async def fake_download_media(
+            _message: Any,
+            *,
+            file: str,
+            progress_callback: Any = None,
+        ) -> None:
+            Path(file).write_bytes(payload)
+
+        client.download_media = AsyncMock(side_effect=fake_download_media)
+
+        classifier = MagicMock()
+        classifier.classify_and_relocate = AsyncMock(
+            return_value=ClassificationResult("inbox", "error_tmdb:RuntimeError")
+        )
+        manager._classifier = classifier
+
+        with (
+            patch(
+                "telegram_downloader.download_manager.notify_async",
+                new=AsyncMock(),
+            ),
+        ):
+            await manager._download_one(client, message)
+
+        inbox_file = config.download_dir / "Inbox" / "2026-11" / "Inception 2010.mp4"
+        assert inbox_file.exists()
+        assert inbox_file.read_bytes() == payload
+        assert message.id in manager.downloaded_ids
+        assert message.id in load_downloaded_ids(config.state_file)
+
+    asyncio.run(scenario())
