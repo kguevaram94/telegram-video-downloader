@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Telegram Downloader</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <link rel="stylesheet" href="/static/app.css?v=2">
+  <link rel="stylesheet" href="/static/app.css?v=3">
 </head>
 <body>
   <div class="shell">
@@ -39,6 +39,14 @@
           </svg>
           Videos
           <span id="videosNavCount" class="nav-count">0</span>
+        </button>
+        <button class="nav-item" data-view="inbox" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M4 7h16v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Z"/>
+            <path d="M4 7 12 13l8-6"/>
+          </svg>
+          Inbox
+          <span id="inboxNavCount" class="nav-count">0</span>
         </button>
         <button class="nav-item" data-view="logs" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -169,6 +177,21 @@
           </div>
         </section>
 
+        <section id="view-inbox" class="view">
+          <div class="section-head">
+            <h2>Inbox</h2>
+          </div>
+          <p id="inboxHint" class="hint">
+            Vídeos descargados pendientes de clasificar. Renombra el archivo en disco si hace falta y pulsa «Reintentar clasificación».
+          </p>
+          <div class="toolbar">
+            <button id="loadInboxBtn" class="primary" type="button">Actualizar Inbox</button>
+          </div>
+          <div id="inboxTableWrap">
+            <div class="empty">Sin archivos cargados.</div>
+          </div>
+        </section>
+
         <section id="view-logs" class="view">
           <div class="section-head">
             <h2>Logs</h2>
@@ -231,6 +254,6 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <script src="/static/app.js?v=3"></script>
+  <script src="/static/app.js?v=4"></script>
 </body>
 </html>

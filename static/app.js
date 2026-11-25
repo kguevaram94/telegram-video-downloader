@@ -1,10 +1,25 @@
-const VIEWS = new Set(["dashboard", "videos", "logs", "settings"]);
+const VIEWS = new Set(["dashboard", "videos", "inbox", "logs", "settings"]);
 const PROGRESS_RE = /^(?:\[\+(\d+) en cola\] )?(.+): *(\d+)% \((.+) \/ (.+)\)$/;
 const CIRCUMFERENCE = 2 * Math.PI * 15;
+
+const RECLASSIFY_STATUS_LABELS = {
+  classified: "Clasificado",
+  not_found: "Sin coincidencia",
+  ambiguous: "Ambiguo",
+  invalid_file: "Archivo no válido",
+  outside_inbox: "Fuera de Inbox",
+  destination_occupied: "Destino ocupado",
+  tmdb_error: "Error TMDb",
+  move_error: "Error al mover",
+  already_processing: "Ya en proceso",
+};
 
 const state = {
   view: "dashboard",
   messages: [],
+  inboxFiles: [],
+  reclassifyBusy: new Set(),
+  reclassifyResults: {},
   downloaderRunning: false,
   pendingDownloadIds: [],
   filter: "all",
@@ -32,6 +47,9 @@ const els = {
   videosNavCount: document.getElementById("videosNavCount"),
   messagesHint: document.getElementById("messagesHint"),
   messagesTableWrap: document.getElementById("messagesTableWrap"),
+  inboxHint: document.getElementById("inboxHint"),
+  inboxTableWrap: document.getElementById("inboxTableWrap"),
+  inboxNavCount: document.getElementById("inboxNavCount"),
   logBox: document.getElementById("logBox"),
   logProgressTitle: document.getElementById("logProgressTitle"),
   logProgressFill: document.getElementById("logProgressFill"),
@@ -42,13 +60,16 @@ const els = {
   replaceList: document.getElementById("replaceList"),
   toast: document.getElementById("toast"),
   loadMessagesBtn: document.getElementById("loadMessagesBtn"),
+  loadInboxBtn: document.getElementById("loadInboxBtn"),
 };
 
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function showToast(message, isError = false) {
@@ -247,6 +268,34 @@ function matchesSearch(message) {
   return haystack.includes(state.search);
 }
 
+function matchesInboxSearch(file) {
+  if (!state.search) return true;
+  const haystack = [file.filename, file.relative_path].join(" ").toLowerCase();
+  return haystack.includes(state.search);
+}
+
+function visibleInboxFiles() {
+  return state.inboxFiles.filter((file) => matchesInboxSearch(file));
+}
+
+function setInboxHint(text, isWarning = false) {
+  els.inboxHint.textContent = text;
+  els.inboxHint.classList.toggle("warn", isWarning);
+}
+
+function formatReclassifyResult(result) {
+  const label = RECLASSIFY_STATUS_LABELS[result.status] || result.status;
+  if (result.status === "classified") {
+    const episode =
+      result.season != null && result.episode != null
+        ? ` S${String(result.season).padStart(2, "0")}E${String(result.episode).padStart(2, "0")}`
+        : "";
+    const title = result.title || result.filename;
+    return `${label}: ${title}${episode}`;
+  }
+  return `${label}${result.reason ? ` · ${result.reason}` : ""}`;
+}
+
 function visibleMessages() {
   return state.messages.filter((message) => matchesFilter(message) && matchesSearch(message));
 }
@@ -296,6 +345,55 @@ function renderVideoRow(message) {
         ${bar}
       </div>
       <div class="video-side">${pill}</div>
+    </article>
+  `;
+}
+
+function renderInbox() {
+  const files = visibleInboxFiles();
+  if (els.inboxNavCount) {
+    els.inboxNavCount.textContent = String(state.inboxFiles.length);
+  }
+
+  if (!state.inboxFiles.length) {
+    els.inboxTableWrap.innerHTML = '<div class="empty">Inbox vacío o aún no cargado.</div>';
+    return;
+  }
+  if (!files.length) {
+    els.inboxTableWrap.innerHTML = '<div class="empty">Ningún archivo coincide con la búsqueda.</div>';
+    return;
+  }
+
+  els.inboxTableWrap.innerHTML = `<div class="video-list">${files.map(renderInboxRow).join("")}</div>`;
+}
+
+function renderInboxRow(file) {
+  const ext = fileExtension(file.filename);
+  const busy = state.reclassifyBusy.has(file.relative_path);
+  const result = state.reclassifyResults[file.relative_path];
+  const resultClass = result?.status === "classified" ? "ok" : result ? "warn" : "muted";
+  const resultHtml = result
+    ? `<span class="badge ${resultClass}">${escapeHtml(formatReclassifyResult(result))}</span>`
+    : '<span class="badge muted">Pendiente</span>';
+  const disabled = busy ? "disabled" : "";
+  const buttonLabel = busy ? "Clasificando…" : "Reintentar clasificación";
+
+  return `
+    <article class="video-row inbox-row">
+      <div class="file-badge ${fileBadgeClass(ext)}">${escapeHtml(ext.toUpperCase())}</div>
+      <div class="video-info">
+        <p class="video-name">${escapeHtml(file.filename)}</p>
+        <div class="video-sub">${escapeHtml(file.relative_path)} · ${escapeHtml(file.size_label)}</div>
+      </div>
+      <div class="video-side">
+        ${resultHtml}
+        <button
+          class="reclassify-btn"
+          type="button"
+          data-relative-path="${escapeHtml(file.relative_path)}"
+          ${disabled}
+        >${buttonLabel}</button>
+      </div>
     </article>
   `;
 }
@@ -361,6 +459,67 @@ async function loadMessages() {
     setMessagesHint("Mensajes cargados. Puedes seleccionar videos y descargarlos manualmente.");
   } finally {
     els.loadMessagesBtn.disabled = false;
+  }
+}
+
+async function loadInbox() {
+  setInboxHint("Cargando archivos de Inbox...");
+  els.loadInboxBtn.disabled = true;
+  try {
+    const response = await fetch("/api/inbox");
+    const data = await response.json();
+    if (!response.ok || data.ok === false) {
+      setInboxHint(data.error || "No se pudo cargar el Inbox.", true);
+      return;
+    }
+    state.inboxFiles = data.files || [];
+    const known = new Set(state.inboxFiles.map((file) => file.relative_path));
+    Object.keys(state.reclassifyResults).forEach((key) => {
+      if (!known.has(key)) delete state.reclassifyResults[key];
+    });
+    renderInbox();
+    const count = state.inboxFiles.length;
+    setInboxHint(
+      count
+        ? `${count} vídeo(s) en Inbox. Renombra en disco si hace falta y reintenta la clasificación.`
+        : "Inbox vacío. Los vídeos sin clasificar aparecerán aquí.",
+    );
+  } catch (error) {
+    setInboxHint("No se pudo cargar el Inbox.", true);
+  } finally {
+    els.loadInboxBtn.disabled = false;
+  }
+}
+
+async function reclassifyInboxFile(relativePath) {
+  if (!relativePath || state.reclassifyBusy.has(relativePath)) return;
+
+  state.reclassifyBusy.add(relativePath);
+  renderInbox();
+  try {
+    const response = await fetch("/api/inbox/reclassify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relative_path: relativePath }),
+    });
+    const data = await response.json();
+    state.reclassifyResults[relativePath] = data;
+
+    if (data.status === "classified") {
+      showToast(formatReclassifyResult(data));
+      await loadInbox();
+      return;
+    }
+
+    const isError = ["tmdb_error", "move_error", "invalid_file", "outside_inbox", "already_processing"]
+      .includes(data.status);
+    showToast(formatReclassifyResult(data), isError || !response.ok);
+    renderInbox();
+  } catch (error) {
+    showToast("No se pudo reintentar la clasificación.", true);
+  } finally {
+    state.reclassifyBusy.delete(relativePath);
+    renderInbox();
   }
 }
 
@@ -466,11 +625,18 @@ function bindEvents() {
 
   els.searchInput.addEventListener("input", () => {
     state.search = els.searchInput.value.trim().toLowerCase();
+    if (state.view === "inbox") {
+      renderInbox();
+      return;
+    }
     if (state.view !== "videos") setView("videos");
     renderMessages();
   });
 
-  els.refreshBtn.addEventListener("click", loadStatus);
+  els.refreshBtn.addEventListener("click", () => {
+    loadStatus();
+    if (state.view === "inbox") loadInbox();
+  });
   document.getElementById("seeLogsBtn").addEventListener("click", () => setView("logs"));
   document.getElementById("openDestCardBtn").addEventListener("click", () => postAction("/api/open-downloads"));
   document.getElementById("openDestSettingsBtn").addEventListener("click", () => postAction("/api/open-downloads"));
@@ -478,6 +644,18 @@ function bindEvents() {
   document.getElementById("stopBtn").addEventListener("click", () => postAction("/api/service/stop"));
   document.getElementById("restartBtn").addEventListener("click", () => postAction("/api/service/restart"));
   els.loadMessagesBtn.addEventListener("click", loadMessages);
+  els.loadInboxBtn.addEventListener("click", loadInbox);
+  els.inboxTableWrap.addEventListener("click", (event) => {
+    const button = event.target.closest(".reclassify-btn");
+    if (!button || button.disabled) return;
+    reclassifyInboxFile(button.dataset.relativePath);
+  });
+
+  document.querySelectorAll('.nav-item[data-view="inbox"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!state.inboxFiles.length) loadInbox();
+    });
+  });
   document.getElementById("selectAllBtn").addEventListener("click", () => {
     visibleMessages().forEach((message) => state.selectedIds.add(message.message_id));
     renderMessages();

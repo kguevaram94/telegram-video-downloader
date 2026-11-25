@@ -1254,6 +1254,24 @@ class MediaClassifier:
         self._confidence_threshold = confidence_threshold
         self._ambiguity_delta = ambiguity_delta
 
+    async def classify_local_file(
+        self,
+        source_path: Path,
+        *,
+        message_text: str | None = None,
+        original_filename: str | None = None,
+    ) -> ClassificationResult:
+        """Clasifica un archivo ya presente en disco sin descargarlo.
+
+        Usa el nombre actual del archivo por defecto (útil tras un renombrado
+        manual en Inbox). No toca Telegram ni el estado de descargas.
+        """
+        return await self.classify_and_relocate(
+            source_path,
+            message_text=message_text,
+            original_filename=original_filename or source_path.name,
+        )
+
     async def classify_and_relocate(
         self,
         source_path: Path,

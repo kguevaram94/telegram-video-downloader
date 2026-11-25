@@ -14,6 +14,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from telegram_downloader.config import AppConfig, load_config
+from telegram_downloader.dashboard.inbox_service import (
+    list_inbox_videos,
+    reclassify_inbox_file,
+)
 from telegram_downloader.dashboard.logs import read_log_tail, read_progress_line
 from telegram_downloader.dashboard.service import (
     ProcessStatus,
@@ -59,6 +63,10 @@ class StatusPayload(TypedDict):
 class DownloadMessagesRequest(BaseModel):
     message_ids: list[int] = Field(min_length=1)
     replace_ids: list[int] = Field(default_factory=list)
+
+
+class ReclassifyInboxRequest(BaseModel):
+    relative_path: str = Field(min_length=1)
 
 
 def _is_downloader_running() -> bool:
@@ -266,6 +274,20 @@ def create_app(config: AppConfig, service_paths: ServicePaths) -> FastAPI:
             "queued": result["queued"],
             "skipped": result["skipped"],
         })
+
+    @app.get("/api/inbox")
+    async def inbox() -> JSONResponse:
+        items = list_inbox_videos(config.download_dir)
+        return JSONResponse({
+            "ok": True,
+            "files": [item.to_dict() for item in items],
+            "count": len(items),
+        })
+
+    @app.post("/api/inbox/reclassify")
+    async def inbox_reclassify(payload: ReclassifyInboxRequest) -> JSONResponse:
+        result = await reclassify_inbox_file(config, payload.relative_path)
+        return JSONResponse(result.to_dict(), status_code=result.http_status)
 
     return app
 

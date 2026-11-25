@@ -357,7 +357,17 @@ button.ghost {
   grid-template-columns: 18px 48px minmax(0, 1fr) auto;
 }
 
+.inbox-row {
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+}
+
 .video-row:hover { background: var(--panel-hover); }
+
+.reclassify-btn {
+  font-size: 0.78rem;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
 
 .file-badge {
   width: 48px;
@@ -632,5 +642,6 @@ body.show-fab .fab { display: grid; }
   .brand-copy { display: none; }
   .cards { grid-template-columns: 1fr; }
   .video-row { grid-template-columns: 18px 40px minmax(0, 1fr); }
+  .inbox-row { grid-template-columns: 40px minmax(0, 1fr); }
   .video-side { grid-column: 2 / -1; align-items: flex-start; }
 }
