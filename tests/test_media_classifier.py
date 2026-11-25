@@ -39,10 +39,14 @@ class FakeTmdbClient:
         results_by_query: dict[str, list[dict[str, Any]]] | None = None,
         *,
         tv_details: dict[str, Any] | None = None,
+        tv_details_by_id: dict[int, dict[str, Any]] | None = None,
         episode_groups: list[dict[str, Any]] | None = None,
+        episode_groups_by_id: dict[int, list[dict[str, Any]]] | None = None,
         episode_group_details: dict[str, dict[str, Any]] | None = None,
         groups_error: Exception | None = None,
+        groups_error_by_id: dict[int, Exception] | None = None,
         group_detail_error: Exception | None = None,
+        group_detail_error_by_id: dict[str, Exception] | None = None,
         tv_details_error: Exception | None = None,
     ) -> None:
         self.results = results or []
@@ -51,10 +55,14 @@ class FakeTmdbClient:
             key.casefold(): value for key, value in (results_by_query or {}).items()
         }
         self.tv_details = tv_details or {}
+        self.tv_details_by_id = tv_details_by_id or {}
         self.episode_groups = episode_groups or []
+        self.episode_groups_by_id = episode_groups_by_id or {}
         self.episode_group_details = episode_group_details or {}
         self.groups_error = groups_error
+        self.groups_error_by_id = groups_error_by_id or {}
         self.group_detail_error = group_detail_error
+        self.group_detail_error_by_id = group_detail_error_by_id or {}
         self.tv_details_error = tv_details_error
         self.calls: list[str] = []
         self.tv_detail_calls: list[int] = []
@@ -73,24 +81,41 @@ class FakeTmdbClient:
         self.tv_detail_calls.append(series_id)
         if self.tv_details_error is not None:
             raise self.tv_details_error
+        if series_id in self.tv_details_by_id:
+            return self.tv_details_by_id[series_id]
         if self.tv_details:
             return self.tv_details
         return {"id": series_id, "name": "Series"}
 
     async def get_tv_episode_groups(self, series_id: int) -> list[dict[str, Any]]:
         self.group_calls.append(series_id)
+        if series_id in self.groups_error_by_id:
+            raise self.groups_error_by_id[series_id]
         if self.groups_error is not None:
             raise self.groups_error
+        if series_id in self.episode_groups_by_id:
+            return self.episode_groups_by_id[series_id]
         return self.episode_groups
 
     async def get_tv_episode_group_details(self, group_id: str) -> dict[str, Any]:
         self.group_detail_calls.append(group_id)
+        if group_id in self.group_detail_error_by_id:
+            raise self.group_detail_error_by_id[group_id]
         if self.group_detail_error is not None:
             raise self.group_detail_error
         details = self.episode_group_details.get(group_id)
         if details is None:
             raise RuntimeError("TMDb HTTP 404")
         return details
+
+
+def _one_piece_live_action_tv_result() -> dict[str, Any]:
+    return {
+        "id": 111110,
+        "media_type": "tv",
+        "name": "One Piece",
+        "first_air_date": "2023-08-31",
+    }
 
 
 def _one_piece_tv_result() -> dict[str, Any]:
@@ -287,6 +312,168 @@ class AbsoluteGroupHelpersTests(unittest.TestCase):
             episode=10,
         )
         self.assertIsNone(find_absolute_episode_in_group(details, 944))
+
+    def test_missing_order_does_not_use_list_position(self) -> None:
+        details = {
+            "id": "no-order",
+            "name": "Absolute",
+            "type": 2,
+            "groups": [
+                {
+                    "order": 0,
+                    "episodes": [
+                        {
+                            "season_number": 21,
+                            "episode_number": 7,
+                            "name": "Episode 944",
+                            "id": 1944,
+                        }
+                    ],
+                }
+            ],
+        }
+        self.assertIsNone(find_absolute_episode_in_group(details, 1))
+
+    def test_duplicate_orders_return_none(self) -> None:
+        details = {
+            "id": "dup-order",
+            "name": "Absolute",
+            "type": 2,
+            "groups": [
+                {
+                    "order": 0,
+                    "episodes": [
+                        {
+                            "order": 0,
+                            "season_number": 1,
+                            "episode_number": 1,
+                            "id": 1,
+                        },
+                        {
+                            "order": 0,
+                            "season_number": 1,
+                            "episode_number": 2,
+                            "id": 2,
+                        },
+                    ],
+                }
+            ],
+        }
+        self.assertIsNone(find_absolute_episode_in_group(details, 1))
+
+    def test_discontinuous_order_does_not_use_list_index(self) -> None:
+        details = {
+            "id": "gap-order",
+            "name": "Absolute",
+            "type": 2,
+            "groups": [
+                {
+                    "order": 0,
+                    "episodes": [
+                        {
+                            "order": 0,
+                            "season_number": 1,
+                            "episode_number": 1,
+                            "id": 1,
+                        },
+                        {
+                            "order": 2,
+                            "season_number": 1,
+                            "episode_number": 3,
+                            "id": 3,
+                        },
+                    ],
+                }
+            ],
+        }
+        self.assertIsNone(find_absolute_episode_in_group(details, 2))
+        linked = find_absolute_episode_in_group(details, 3)
+        assert linked is not None
+        self.assertEqual((linked.season, linked.episode), (1, 3))
+
+    def test_boolean_order_true_is_rejected(self) -> None:
+        details = {
+            "id": "bool-order-true",
+            "name": "Absolute",
+            "type": 2,
+            "groups": [
+                {
+                    "order": 0,
+                    "episodes": [
+                        {
+                            "order": True,
+                            "season_number": 1,
+                            "episode_number": 1,
+                            "id": 1,
+                        }
+                    ],
+                }
+            ],
+        }
+        self.assertIsNone(find_absolute_episode_in_group(details, 1))
+
+    def test_boolean_order_false_is_rejected(self) -> None:
+        details = {
+            "id": "bool-order-false",
+            "name": "Absolute",
+            "type": 2,
+            "groups": [
+                {
+                    "order": 0,
+                    "episodes": [
+                        {
+                            "order": False,
+                            "season_number": 1,
+                            "episode_number": 1,
+                            "id": 1,
+                        }
+                    ],
+                }
+            ],
+        }
+        self.assertIsNone(find_absolute_episode_in_group(details, 1))
+
+    def test_boolean_season_number_is_rejected(self) -> None:
+        details = {
+            "id": "bool-season",
+            "name": "Absolute",
+            "type": 2,
+            "groups": [
+                {
+                    "order": 0,
+                    "episodes": [
+                        {
+                            "order": 0,
+                            "season_number": True,
+                            "episode_number": 1,
+                            "id": 1,
+                        }
+                    ],
+                }
+            ],
+        }
+        self.assertIsNone(find_absolute_episode_in_group(details, 1))
+
+    def test_boolean_episode_number_is_rejected(self) -> None:
+        details = {
+            "id": "bool-episode",
+            "name": "Absolute",
+            "type": 2,
+            "groups": [
+                {
+                    "order": 0,
+                    "episodes": [
+                        {
+                            "order": 0,
+                            "season_number": 1,
+                            "episode_number": True,
+                            "id": 1,
+                        }
+                    ],
+                }
+            ],
+        }
+        self.assertIsNone(find_absolute_episode_in_group(details, 1))
 
 
 class ParseMediaNameTests(unittest.TestCase):
@@ -927,27 +1114,392 @@ class ClassifierIntegrationTests(unittest.TestCase):
             self.assertEqual(result.parsed.episode.season, 21)
             self.assertEqual(result.parsed.episode.episode, 7)
 
-    def test_ambiguous_absolute_series_matches_stay_inbox(self) -> None:
+    def test_one_piece_absolute_disambiguates_anime_over_live_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "media"
             download_dir = _media_layout(root)
             source = download_dir / "Inbox" / "One Piece 944.mp4"
             source.write_bytes(b"video")
+            anime = _one_piece_tv_result()
+            live_action = _one_piece_live_action_tv_result()
             client = FakeTmdbClient(
-                [
-                    {
-                        "id": 1,
-                        "media_type": "tv",
+                [anime, live_action],
+                tv_details_by_id={
+                    anime["id"]: {"id": anime["id"], "name": "One Piece"},
+                    live_action["id"]: {
+                        "id": live_action["id"],
                         "name": "One Piece",
-                        "first_air_date": "1999-10-20",
                     },
-                    {
-                        "id": 2,
-                        "media_type": "tv",
+                },
+                episode_groups_by_id={
+                    anime["id"]: [
+                        {
+                            "id": "anime-abs",
+                            "name": "Absolute (No Specials)",
+                            "type": 2,
+                            "episode_count": 944,
+                        }
+                    ],
+                    live_action["id"]: [
+                        {
+                            "id": "live-abs",
+                            "name": "Absolute",
+                            "type": 2,
+                            "episode_count": 8,
+                        }
+                    ],
+                },
+                episode_group_details={
+                    "anime-abs": _absolute_group_details(
+                        absolute_episode=944,
+                        season=21,
+                        episode=7,
+                    ),
+                    "live-abs": _absolute_group_details(
+                        absolute_episode=8,
+                        season=1,
+                        episode=8,
+                    ),
+                },
+            )
+            classifier = MediaClassifier(client, download_dir=download_dir)
+            result = _run(
+                classifier.classify_and_relocate(
+                    source,
+                    message_text=None,
+                    original_filename="One Piece 944.mp4",
+                )
+            )
+
+            self.assertEqual(result.status, "classified")
+            assert result.match is not None
+            self.assertEqual(result.match.tmdb_id, anime["id"])
+            self.assertEqual(result.match.year, 1999)
+            assert result.destination is not None
+            self.assertEqual(
+                result.destination,
+                root / "Series" / "One Piece" / "Season 21" / "One Piece 944.mp4",
+            )
+            self.assertCountEqual(
+                client.group_calls,
+                [anime["id"], live_action["id"]],
+            )
+
+    def test_one_piece_absolute_unverifiable_candidate_stays_inbox(self) -> None:
+        """Si un candidato falla TMDB, no clasificar aunque el otro tenga match."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "media"
+            download_dir = _media_layout(root)
+            source = download_dir / "Inbox" / "One Piece 944.mp4"
+            source.write_bytes(b"video")
+            anime = _one_piece_tv_result()
+            live_action = _one_piece_live_action_tv_result()
+            client = FakeTmdbClient(
+                [anime, live_action],
+                tv_details_by_id={
+                    anime["id"]: {"id": anime["id"], "name": "One Piece"},
+                    live_action["id"]: {
+                        "id": live_action["id"],
                         "name": "One Piece",
-                        "first_air_date": "2023-08-31",
                     },
-                ]
+                },
+                episode_groups_by_id={
+                    anime["id"]: [
+                        {
+                            "id": "anime-abs",
+                            "name": "Absolute (No Specials)",
+                            "type": 2,
+                            "episode_count": 944,
+                        }
+                    ],
+                },
+                episode_group_details={
+                    "anime-abs": _absolute_group_details(
+                        absolute_episode=944,
+                        season=21,
+                        episode=7,
+                    ),
+                },
+                groups_error_by_id={
+                    live_action["id"]: RuntimeError("TMDb timeout"),
+                },
+            )
+            classifier = MediaClassifier(client, download_dir=download_dir)
+            result = _run(
+                classifier.classify_and_relocate(
+                    source,
+                    message_text=None,
+                    original_filename="One Piece 944.mp4",
+                )
+            )
+            self.assertEqual(result.status, "inbox")
+            self.assertTrue(result.reason.startswith("error_tmdb"))
+            self.assertTrue(source.exists())
+            self.assertIsNone(result.destination)
+            self.assertCountEqual(
+                client.group_calls,
+                [anime["id"], live_action["id"]],
+            )
+
+    def test_one_piece_partial_group_detail_failure_stays_inbox(self) -> None:
+        """Un grupo Absolute fallido no se degrada a 'no encontrado' entre candidatos."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "media"
+            download_dir = _media_layout(root)
+            source = download_dir / "Inbox" / "One Piece 944.mp4"
+            source.write_bytes(b"video")
+            anime = _one_piece_tv_result()
+            live_action = _one_piece_live_action_tv_result()
+            client = FakeTmdbClient(
+                [anime, live_action],
+                tv_details_by_id={
+                    anime["id"]: {"id": anime["id"], "name": "One Piece"},
+                    live_action["id"]: {
+                        "id": live_action["id"],
+                        "name": "One Piece",
+                    },
+                },
+                episode_groups_by_id={
+                    anime["id"]: [
+                        {
+                            "id": "anime-abs",
+                            "name": "Absolute (No Specials)",
+                            "type": 2,
+                            "episode_count": 944,
+                        }
+                    ],
+                    live_action["id"]: [
+                        {
+                            "id": "live-abs-a",
+                            "name": "Absolute",
+                            "type": 2,
+                            "episode_count": 8,
+                        },
+                        {
+                            "id": "live-abs-b",
+                            "name": "Absolute Order",
+                            "type": 2,
+                            "episode_count": 8,
+                        },
+                    ],
+                },
+                episode_group_details={
+                    "anime-abs": _absolute_group_details(
+                        absolute_episode=944,
+                        season=21,
+                        episode=7,
+                    ),
+                    "live-abs-b": _absolute_group_details(
+                        absolute_episode=8,
+                        season=1,
+                        episode=8,
+                    ),
+                },
+                group_detail_error_by_id={
+                    "live-abs-a": RuntimeError("TMDb timeout"),
+                },
+            )
+            classifier = MediaClassifier(client, download_dir=download_dir)
+            result = _run(
+                classifier.classify_and_relocate(
+                    source,
+                    message_text=None,
+                    original_filename="One Piece 944.mp4",
+                )
+            )
+            self.assertEqual(result.status, "inbox")
+            self.assertTrue(result.reason.startswith("error_tmdb"))
+            self.assertNotEqual(result.reason, "episodio_absoluto_no_encontrado")
+            self.assertTrue(source.exists())
+            self.assertIsNone(result.destination)
+            self.assertCountEqual(
+                client.group_calls,
+                [anime["id"], live_action["id"]],
+            )
+            self.assertIn("live-abs-a", client.group_detail_calls)
+            self.assertIn("live-abs-b", client.group_detail_calls)
+
+    def test_absolute_group_detail_failure_then_valid_match_wins(self) -> None:
+        """Si un grupo falla pero otro contiene el episodio, prevalece el match."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "media"
+            download_dir = _media_layout(root)
+            source = download_dir / "Inbox" / "One Piece 944.mp4"
+            source.write_bytes(b"video")
+            anime = _one_piece_tv_result()
+            client = FakeTmdbClient(
+                [anime],
+                tv_details_by_id={
+                    anime["id"]: {"id": anime["id"], "name": "One Piece"},
+                },
+                episode_groups_by_id={
+                    anime["id"]: [
+                        {
+                            # Preferido primero ("No Specials") pero falla al consultar.
+                            "id": "anime-abs-fail",
+                            "name": "Absolute (No Specials)",
+                            "type": 2,
+                            "episode_count": 944,
+                        },
+                        {
+                            "id": "anime-abs-ok",
+                            "name": "Absolute",
+                            "type": 2,
+                            "episode_count": 944,
+                        },
+                    ],
+                },
+                episode_group_details={
+                    "anime-abs-ok": _absolute_group_details(
+                        absolute_episode=944,
+                        season=21,
+                        episode=7,
+                    ),
+                },
+                group_detail_error_by_id={
+                    "anime-abs-fail": RuntimeError("TMDb timeout"),
+                },
+            )
+            classifier = MediaClassifier(client, download_dir=download_dir)
+            result = _run(
+                classifier.classify_and_relocate(
+                    source,
+                    message_text=None,
+                    original_filename="One Piece 944.mp4",
+                )
+            )
+            self.assertEqual(result.status, "classified")
+            assert result.match is not None
+            self.assertEqual(result.match.tmdb_id, anime["id"])
+            assert result.destination is not None
+            self.assertEqual(
+                result.destination,
+                root / "Series" / "One Piece" / "Season 21" / "One Piece 944.mp4",
+            )
+            self.assertEqual(
+                client.group_detail_calls,
+                ["anime-abs-fail", "anime-abs-ok"],
+            )
+
+    def test_one_piece_absolute_both_verified_only_anime_matches(self) -> None:
+        """Ambos candidatos verificados; solo anime tiene correspondencia → clasificar."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "media"
+            download_dir = _media_layout(root)
+            source = download_dir / "Inbox" / "One Piece 944.mp4"
+            source.write_bytes(b"video")
+            anime = _one_piece_tv_result()
+            live_action = _one_piece_live_action_tv_result()
+            client = FakeTmdbClient(
+                [anime, live_action],
+                tv_details_by_id={
+                    anime["id"]: {"id": anime["id"], "name": "One Piece"},
+                    live_action["id"]: {
+                        "id": live_action["id"],
+                        "name": "One Piece",
+                    },
+                },
+                episode_groups_by_id={
+                    anime["id"]: [
+                        {
+                            "id": "anime-abs",
+                            "name": "Absolute (No Specials)",
+                            "type": 2,
+                            "episode_count": 944,
+                        }
+                    ],
+                    live_action["id"]: [
+                        {
+                            "id": "live-abs",
+                            "name": "Absolute",
+                            "type": 2,
+                            "episode_count": 8,
+                        }
+                    ],
+                },
+                episode_group_details={
+                    "anime-abs": _absolute_group_details(
+                        absolute_episode=944,
+                        season=21,
+                        episode=7,
+                    ),
+                    "live-abs": _absolute_group_details(
+                        absolute_episode=8,
+                        season=1,
+                        episode=8,
+                    ),
+                },
+            )
+            classifier = MediaClassifier(client, download_dir=download_dir)
+            result = _run(
+                classifier.classify_and_relocate(
+                    source,
+                    message_text=None,
+                    original_filename="One Piece 944.mp4",
+                )
+            )
+
+            self.assertEqual(result.status, "classified")
+            assert result.match is not None
+            self.assertEqual(result.match.tmdb_id, anime["id"])
+            self.assertEqual(result.match.year, 1999)
+            assert result.destination is not None
+            self.assertEqual(
+                result.destination,
+                root / "Series" / "One Piece" / "Season 21" / "One Piece 944.mp4",
+            )
+            self.assertCountEqual(
+                client.group_calls,
+                [anime["id"], live_action["id"]],
+            )
+
+    def test_one_piece_absolute_both_candidates_match_stay_inbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "media"
+            download_dir = _media_layout(root)
+            source = download_dir / "Inbox" / "One Piece 944.mp4"
+            source.write_bytes(b"video")
+            anime = _one_piece_tv_result()
+            live_action = _one_piece_live_action_tv_result()
+            client = FakeTmdbClient(
+                [anime, live_action],
+                tv_details_by_id={
+                    anime["id"]: {"id": anime["id"], "name": "One Piece"},
+                    live_action["id"]: {
+                        "id": live_action["id"],
+                        "name": "One Piece",
+                    },
+                },
+                episode_groups_by_id={
+                    anime["id"]: [
+                        {
+                            "id": "anime-abs",
+                            "name": "Absolute (No Specials)",
+                            "type": 2,
+                            "episode_count": 944,
+                        }
+                    ],
+                    live_action["id"]: [
+                        {
+                            "id": "live-abs",
+                            "name": "Absolute",
+                            "type": 2,
+                            "episode_count": 944,
+                        }
+                    ],
+                },
+                episode_group_details={
+                    "anime-abs": _absolute_group_details(
+                        absolute_episode=944,
+                        season=21,
+                        episode=7,
+                    ),
+                    "live-abs": _absolute_group_details(
+                        absolute_episode=944,
+                        season=1,
+                        episode=1,
+                    ),
+                },
             )
             classifier = MediaClassifier(client, download_dir=download_dir)
             result = _run(
@@ -960,7 +1512,74 @@ class ClassifierIntegrationTests(unittest.TestCase):
             self.assertEqual(result.status, "inbox")
             self.assertEqual(result.reason, "ambiguo")
             self.assertTrue(source.exists())
-            self.assertEqual(client.group_calls, [])
+            self.assertCountEqual(
+                client.group_calls,
+                [anime["id"], live_action["id"]],
+            )
+
+    def test_one_piece_absolute_neither_candidate_matches_stay_inbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "media"
+            download_dir = _media_layout(root)
+            source = download_dir / "Inbox" / "One Piece 944.mp4"
+            source.write_bytes(b"video")
+            anime = _one_piece_tv_result()
+            live_action = _one_piece_live_action_tv_result()
+            client = FakeTmdbClient(
+                [anime, live_action],
+                tv_details_by_id={
+                    anime["id"]: {"id": anime["id"], "name": "One Piece"},
+                    live_action["id"]: {
+                        "id": live_action["id"],
+                        "name": "One Piece",
+                    },
+                },
+                episode_groups_by_id={
+                    anime["id"]: [
+                        {
+                            "id": "anime-abs",
+                            "name": "Absolute (No Specials)",
+                            "type": 2,
+                            "episode_count": 10,
+                        }
+                    ],
+                    live_action["id"]: [
+                        {
+                            "id": "live-abs",
+                            "name": "Absolute",
+                            "type": 2,
+                            "episode_count": 8,
+                        }
+                    ],
+                },
+                episode_group_details={
+                    "anime-abs": _absolute_group_details(
+                        absolute_episode=10,
+                        season=1,
+                        episode=10,
+                    ),
+                    "live-abs": _absolute_group_details(
+                        absolute_episode=8,
+                        season=1,
+                        episode=8,
+                    ),
+                },
+            )
+            classifier = MediaClassifier(client, download_dir=download_dir)
+            result = _run(
+                classifier.classify_and_relocate(
+                    source,
+                    message_text=None,
+                    original_filename="One Piece 944.mp4",
+                )
+            )
+            self.assertEqual(result.status, "inbox")
+            self.assertEqual(result.reason, "episodio_absoluto_no_encontrado")
+            self.assertTrue(source.exists())
+            self.assertCountEqual(
+                client.group_calls,
+                [anime["id"], live_action["id"]],
+            )
 
     def test_missing_absolute_group_stays_inbox(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1098,6 +1098,26 @@ def _is_ambiguous(
     return len(years) > 1
 
 
+def list_reliable_tv_matches(
+    results: list[dict[str, Any]],
+    parsed: ParsedMediaName,
+    *,
+    confidence_threshold: float,
+) -> tuple[list[TmdbMatch], str]:
+    """Devuelve todas las series TV que superan el umbral de similitud."""
+    tv_only = [item for item in results if item.get("media_type") == "tv"]
+    scored = _score_all_results(tv_only, parsed)
+    if not scored:
+        return [], "sin_resultados_tv"
+
+    best = scored[0]
+    if best.score < confidence_threshold:
+        return [], "confianza_insuficiente"
+
+    contenders = [item for item in scored if item.score >= confidence_threshold]
+    return contenders, "ok"
+
+
 def pick_best_tv_match(
     results: list[dict[str, Any]],
     parsed: ParsedMediaName,
@@ -1106,19 +1126,16 @@ def pick_best_tv_match(
     ambiguity_delta: float,
 ) -> tuple[TmdbMatch | None, str]:
     """Selecciona una serie TV fiable; ignora películas y resultados no-TV."""
-    tv_only = [item for item in results if item.get("media_type") == "tv"]
-    scored = _score_all_results(tv_only, parsed)
-    if not scored:
-        return None, "sin_resultados_tv"
-
-    best = scored[0]
-    if best.score < confidence_threshold:
-        return None, "confianza_insuficiente"
-
-    contenders = [item for item in scored if item.score >= confidence_threshold]
+    contenders, reason = list_reliable_tv_matches(
+        results,
+        parsed,
+        confidence_threshold=confidence_threshold,
+    )
+    if not contenders:
+        return None, reason
     if _is_ambiguous(contenders, parsed, ambiguity_delta):
         return None, "ambiguo"
-    return best, "ok"
+    return contenders[0], "ok"
 
 
 def _absolute_group_preference(group: dict[str, Any]) -> tuple[int, int]:
@@ -1159,34 +1176,34 @@ def select_absolute_episode_groups(
 def flatten_episode_group_episodes(
     details: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    """Extrae episodios del grupo sin inventar órdenes ausentes."""
     groups = details.get("groups")
     if not isinstance(groups, list):
         return []
 
     ordered_groups = sorted(
         [group for group in groups if isinstance(group, dict)],
-        key=lambda group: group.get("order", 0)
+        key=lambda group: group.get("order")
         if isinstance(group.get("order"), int)
-        else 0,
+        else -1,
     )
     flattened: list[dict[str, Any]] = []
     for group in ordered_groups:
         episodes = group.get("episodes")
         if not isinstance(episodes, list):
             continue
-        ordered_episodes = sorted(
-            [episode for episode in episodes if isinstance(episode, dict)],
-            key=lambda episode: episode.get("order", 0)
-            if isinstance(episode.get("order"), int)
-            else 0,
-        )
-        flattened.extend(ordered_episodes)
+        for episode in episodes:
+            if isinstance(episode, dict):
+                flattened.append(episode)
     return flattened
 
 
 def _episode_link_from_payload(episode: dict[str, Any]) -> EpisodeInfo | None:
     season = episode.get("season_number")
     number = episode.get("episode_number")
+    # bool hereda de int; rechazarlo antes del chequeo isinstance(..., int).
+    if isinstance(season, bool) or isinstance(number, bool):
+        return None
     if not isinstance(season, int) or not isinstance(number, int):
         return None
     if season < 0 or number <= 0:
@@ -1194,31 +1211,47 @@ def _episode_link_from_payload(episode: dict[str, Any]) -> EpisodeInfo | None:
     return EpisodeInfo(season=season, episode=number)
 
 
+def _build_validated_order_map(
+    episodes: list[dict[str, Any]],
+) -> dict[int, dict[str, Any]] | None:
+    """Mapea order -> episodio si la estructura es coherente e inequívoca."""
+    if not episodes:
+        return None
+
+    order_map: dict[int, dict[str, Any]] = {}
+    for episode in episodes:
+        order = episode.get("order")
+        # bool hereda de int; rechazarlo antes del chequeo isinstance(..., int).
+        if isinstance(order, bool) or not isinstance(order, int) or order < 0:
+            return None
+        if order in order_map:
+            return None
+        order_map[order] = episode
+    return order_map
+
+
 def find_absolute_episode_in_group(
     details: dict[str, Any],
     absolute_episode: int,
 ) -> EpisodeInfo | None:
-    """Resuelve el episodio absoluto usando el orden del grupo TMDb.
+    """Resuelve el episodio absoluto usando el orden explícito del grupo TMDb.
 
-    No estima SxxExx; usa el enlace season_number/episode_number del grupo.
+    Requiere órdenes enteros válidos, únicos e inequívocos. No usa la posición
+    en la lista como sustituto de un order ausente, duplicado o discontinuo.
     """
     if absolute_episode <= 0:
         return None
 
     episodes = flatten_episode_group_episodes(details)
-    if not episodes:
+    order_map = _build_validated_order_map(episodes)
+    if order_map is None:
         return None
 
-    for episode in episodes:
-        order = episode.get("order")
-        if isinstance(order, int) and order + 1 == absolute_episode:
-            linked = _episode_link_from_payload(episode)
-            if linked is not None:
-                return linked
-
-    if absolute_episode <= len(episodes):
-        return _episode_link_from_payload(episodes[absolute_episode - 1])
-    return None
+    target_order = absolute_episode - 1
+    episode = order_map.get(target_order)
+    if episode is None:
+        return None
+    return _episode_link_from_payload(episode)
 
 
 def build_classified_destination(
@@ -1458,37 +1491,89 @@ class MediaClassifier:
         parsed: ParsedMediaName,
         absolute: int,
     ) -> AbsoluteEpisodeResolution | str:
+        contenders, last_reason = await self._collect_tv_contenders(parsed)
+        if not contenders:
+            return last_reason
+
+        if len(contenders) > 1:
+            _log_tmdb(
+                f"Candidatos TV ambiguos: count={len(contenders)}; "
+                "desambiguando con grupos Absolute"
+            )
+
+        resolutions: list[AbsoluteEpisodeResolution] = []
+        verification_errors: list[str] = []
+        for match in contenders:
+            outcome = await self._resolve_absolute_for_series(match, absolute)
+            if isinstance(outcome, AbsoluteEpisodeResolution):
+                resolutions.append(outcome)
+                _log_tmdb(
+                    f"Correspondencia Absolute en candidato: "
+                    f"title={match.title!r} id={match.tmdb_id} "
+                    f"year={match.year}"
+                )
+            else:
+                last_reason = outcome
+                if outcome.startswith("error_tmdb"):
+                    verification_errors.append(outcome)
+                _log_tmdb(
+                    f"Sin Absolute válido en candidato: "
+                    f"title={match.title!r} id={match.tmdb_id} "
+                    f"motivo={outcome}"
+                )
+
+        # Con varios candidatos, un error de API no equivale a "sin correspondencia".
+        # No clasificar si alguno no pudo verificarse.
+        if len(contenders) > 1 and verification_errors:
+            return verification_errors[-1]
+
+        if len(resolutions) == 1:
+            return resolutions[0]
+        if len(resolutions) > 1:
+            return "ambiguo"
+        return last_reason
+
+    async def _collect_tv_contenders(
+        self,
+        parsed: ParsedMediaName,
+    ) -> tuple[list[TmdbMatch], str]:
         queries = parsed.search_queries or (parsed.title_query,)
-        match: TmdbMatch | None = None
         last_reason = "sin_resultados_tv"
         for query in queries:
             try:
                 results = await self._client.search_multi(query)
             except Exception as exc:
-                return f"error_tmdb:{exc.__class__.__name__}"
-            match, last_reason = pick_best_tv_match(
+                return [], f"error_tmdb:{exc.__class__.__name__}"
+            contenders, last_reason = list_reliable_tv_matches(
                 results,
                 parsed,
                 confidence_threshold=self._confidence_threshold,
-                ambiguity_delta=self._ambiguity_delta,
             )
-            if match is not None:
-                break
-        if match is None:
-            return last_reason
+            if contenders:
+                return contenders, last_reason
+        return [], last_reason
+
+    async def _resolve_absolute_for_series(
+        self,
+        match: TmdbMatch,
+        absolute: int,
+    ) -> AbsoluteEpisodeResolution | str:
         if match.media_type != "tv":
             return "no_es_serie"
 
-        details_ok = await self._confirm_tv_series(match.tmdb_id)
-        if not details_ok:
-            return "serie_incompleta"
+        confirmation = await self._confirm_tv_series(match.tmdb_id)
+        if confirmation is not True:
+            return confirmation
 
         try:
             groups = await self._client.get_tv_episode_groups(match.tmdb_id)
         except Exception as exc:
             return f"error_tmdb_groups:{exc.__class__.__name__}"
 
-        _log_tmdb(f"Grupos de episodios encontrados: count={len(groups)}")
+        _log_tmdb(
+            f"Grupos de episodios encontrados: series_id={match.tmdb_id} "
+            f"count={len(groups)}"
+        )
         absolute_groups = select_absolute_episode_groups(groups)
         if not absolute_groups:
             return "sin_grupo_absoluto"
@@ -1499,13 +1584,16 @@ class MediaClassifier:
             absolute,
         )
 
-    async def _confirm_tv_series(self, series_id: int) -> bool:
+    async def _confirm_tv_series(self, series_id: int) -> bool | str:
+        """True si la serie es válida; motivo str si incompleta o error de TMDB."""
         try:
             details = await self._client.get_tv_details(series_id)
-        except Exception:
-            return False
+        except Exception as exc:
+            return f"error_tmdb_details:{exc.__class__.__name__}"
         name = details.get("name") or details.get("original_name")
-        return isinstance(name, str) and bool(name.strip()) and "id" in details
+        if isinstance(name, str) and bool(name.strip()) and "id" in details:
+            return True
+        return "serie_incompleta"
 
     async def _match_absolute_in_groups(
         self,
@@ -1514,13 +1602,15 @@ class MediaClassifier:
         absolute: int,
     ) -> AbsoluteEpisodeResolution | str:
         last_reason = "episodio_absoluto_no_encontrado"
+        query_error: str | None = None
         for group in absolute_groups:
             group_id = str(group["id"]).strip()
             group_name = str(group.get("name") or group_id)
             try:
                 details = await self._client.get_tv_episode_group_details(group_id)
             except Exception as exc:
-                last_reason = f"error_tmdb_group_detail:{exc.__class__.__name__}"
+                # Conservar el error: un "no encontrado" posterior no lo anula.
+                query_error = f"error_tmdb_group_detail:{exc.__class__.__name__}"
                 continue
 
             if not isinstance(details.get("groups"), list):
@@ -1539,6 +1629,8 @@ class MediaClassifier:
                 group_name=group_name,
                 absolute_episode=absolute,
             )
+        if query_error is not None:
+            return query_error
         return last_reason
 
     def _relocate_match(
